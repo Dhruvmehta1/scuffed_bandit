@@ -76,120 +76,28 @@ export default function App() {
     return new ShellEngine(vfs);
   }, [vfs]);
 
-  // Real-time Multi-Team Sync Hub
+  // Real-time Multi-Team Sync Hub (Supabase Presence + Broadcast)
   const syncHub = useMemo(() => {
-    return new MultiplayerSyncHub((event) => {
-      if (!event) return;
+    return new MultiplayerSyncHub(
+      (event) => {
+        if (!event) return;
 
-      if (event.type === 'ADMIN_BROADCAST') {
-        setAdminBanner(event.payload.message);
-        soundFx.playSuccessChime();
-      } else if (event.type === 'TIMER_STATE') {
-        setTimerRunning(event.payload.running);
-      } else if (event.type === 'TEAM_SYNC_REQUEST') {
-        // Broadcast current teams state to newly connected client
-        const stored = syncHub.getStoredRooms();
-        if (stored && stored.length > 0) {
-          syncHub.broadcast('TEAM_ALL_SYNC', { teams: stored });
+        if (event.type === 'ADMIN_BROADCAST') {
+          setAdminBanner(event.payload.message);
+          soundFx.playSuccessChime();
+        } else if (event.type === 'TIMER_STATE') {
+          setTimerRunning(event.payload.running);
+        } else if (event.type === 'TEAM_JOIN' || event.type === 'TEAM_LEVEL_UP' || event.type === 'TEAM_LEAVE') {
+          setActivityFeed(prev => [...prev, event]);
         }
-      } else if (event.type === 'TEAM_ALL_SYNC' && event.payload && Array.isArray(event.payload.teams)) {
-        // Merge full teams list from master sync
-        const remoteTeams = event.payload.teams;
-        setTeams(prevTeams => {
-          const safe = Array.isArray(prevTeams) ? prevTeams : [];
-          const mergedMap = new Map();
-
-          safe.forEach(t => t && t.name && mergedMap.set(t.name.toLowerCase(), t));
-          remoteTeams.forEach(rt => {
-            if (!rt || !rt.name) return;
-            const existing = mergedMap.get(rt.name.toLowerCase());
-            if (!existing) {
-              mergedMap.set(rt.name.toLowerCase(), rt);
-            } else {
-              // Merge players list
-              const existingPlayers = existing.players || [];
-              const remotePlayers = rt.players || [];
-              const playerMap = new Map();
-              existingPlayers.forEach(p => p && p.handle && playerMap.set(p.handle.toLowerCase(), p));
-              remotePlayers.forEach(p => p && p.handle && playerMap.set(p.handle.toLowerCase(), p));
-
-              mergedMap.set(rt.name.toLowerCase(), {
-                ...existing,
-                players: Array.from(playerMap.values()),
-                unlockedLevel: Math.max(existing.unlockedLevel || 0, rt.unlockedLevel || 0)
-              });
-            }
-          });
-
-          const result = Array.from(mergedMap.values());
-          syncHub.saveStoredRooms(result);
-          return result;
-        });
-      } else if (event.type === 'TEAM_JOIN' || event.type === 'TEAM_LEVEL_UP' || event.type === 'TEAM_LEAVE' || event.type === 'TEAM_STATE_SYNC') {
-        setActivityFeed(prev => [...prev, event]);
-
-        // Single Team Object Sync
-        if (event.type === 'TEAM_STATE_SYNC' && event.payload && event.payload.team) {
-          const syncedTeam = event.payload.team;
-          setTeams(prevTeams => {
-            const safe = Array.isArray(prevTeams) ? prevTeams : [];
-            const exists = safe.some(t => t && t.name && t.name.toLowerCase() === syncedTeam.name.toLowerCase());
-            const newTeams = exists
-              ? safe.map(t => (t && t.name && t.name.toLowerCase() === syncedTeam.name.toLowerCase()) ? syncedTeam : t)
-              : [...safe, syncedTeam];
-            syncHub.saveStoredRooms(newTeams);
-            return newTeams;
-          });
-          return;
-        }
-
-        // Individual player join / level up / leave event
-        if (event.payload && event.payload.teamName) {
-          const tName = event.payload.teamName;
-          const incomingPlayer = event.payload.player;
-          const incomingLevel = event.payload.unlockedLevel;
-
-          setTeams(prevTeams => {
-            const safe = Array.isArray(prevTeams) ? prevTeams : [];
-            let targetTeam = safe.find(t => t && t.name && t.name.toLowerCase() === tName.toLowerCase());
-            if (!targetTeam) {
-              targetTeam = { name: tName, maxPlayers: 2, players: [], unlockedLevel: 0 };
-            }
-
-            let updatedPlayers = Array.isArray(targetTeam.players) ? [...targetTeam.players] : [];
-
-            if (event.type === 'TEAM_JOIN' && incomingPlayer) {
-              const exists = updatedPlayers.some(p => p && p.handle && p.handle.toLowerCase() === incomingPlayer.handle.toLowerCase());
-              if (!exists) updatedPlayers.push(incomingPlayer);
-            } else if (event.type === 'TEAM_LEAVE' && incomingPlayer) {
-              updatedPlayers = updatedPlayers.filter(p => p && p.handle && p.handle.toLowerCase() !== incomingPlayer.handle.toLowerCase());
-            }
-
-            const updatedTeam = {
-              ...targetTeam,
-              players: updatedPlayers,
-              unlockedLevel: incomingLevel !== undefined ? Math.max(targetTeam.unlockedLevel || 0, incomingLevel) : targetTeam.unlockedLevel
-            };
-
-            const newTeams = safe.map(t => (t && t.name && t.name.toLowerCase() === tName.toLowerCase()) ? updatedTeam : t);
-            if (!safe.some(t => t && t.name && t.name.toLowerCase() === tName.toLowerCase())) {
-              newTeams.push(updatedTeam);
-            }
-
-            syncHub.saveStoredRooms(newTeams);
-
-            // Re-broadcast full team state so other clients get complete team info
-            if (event.type === 'TEAM_JOIN') {
-              setTimeout(() => {
-                syncHub.broadcast('TEAM_STATE_SYNC', { team: updatedTeam });
-              }, 200);
-            }
-
-            return newTeams;
-          });
+      },
+      (aggregatedTeams) => {
+        // Automatic live team list sync from Supabase Presence
+        if (Array.isArray(aggregatedTeams)) {
+          setTeams(aggregatedTeams);
         }
       }
-    });
+    );
   }, []);
 
   // Load stored teams on mount
@@ -200,10 +108,11 @@ export default function App() {
     }
   }, [syncHub]);
 
-  // Broadcast TEAM_LEAVE on refresh/unload
+  // Untrack player on refresh/unload
   useEffect(() => {
     const handleBeforeUnload = () => {
       if (player && activeTeamName) {
+        syncHub.untrackPlayer();
         syncHub.broadcast('TEAM_LEAVE', {
           teamName: activeTeamName,
           player,
@@ -234,7 +143,7 @@ export default function App() {
     setActiveTeamName(teamNameInput);
 
     const newPlayer = {
-      id: 'player-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+      id: 'player-' + handle.toLowerCase(),
       handle,
       avatar,
       startTime: Date.now()
@@ -242,43 +151,20 @@ export default function App() {
 
     setPlayer(newPlayer);
 
-    // Update local teams state
-    let updatedTeamObj = null;
-    setTeams(prevTeams => {
-      const safe = Array.isArray(prevTeams) ? prevTeams : [];
-      let target = safe.find(t => t && t.name && t.name.toLowerCase() === teamNameInput.toLowerCase());
-      if (!target) {
-        target = { name: teamNameInput, maxPlayers: 2, players: [], unlockedLevel: 0 };
-      }
+    // Track Player in Supabase Realtime Presence across devices
+    syncHub.trackPlayer(teamNameInput, handle, avatar, 0);
 
-      const existingPlayers = Array.isArray(target.players) ? target.players : [];
-      const exists = existingPlayers.some(p => p && p.handle && p.handle.toLowerCase() === handle.toLowerCase());
-      const updatedPlayers = exists ? existingPlayers : [...existingPlayers, newPlayer];
-
-      updatedTeamObj = { ...target, players: updatedPlayers };
-      const newTeams = safe.map(t => (t && t.name && t.name.toLowerCase() === teamNameInput.toLowerCase()) ? updatedTeamObj : t);
-      if (!safe.some(t => t && t.name && t.name.toLowerCase() === teamNameInput.toLowerCase())) {
-        newTeams.push(updatedTeamObj);
-      }
-
-      syncHub.saveStoredRooms(newTeams);
-      return newTeams;
-    });
-
-    // Broadcast JOIN and TEAM STATE globally to all connected devices over Supabase
+    // Broadcast JOIN event
     syncHub.broadcast('TEAM_JOIN', {
       teamName: teamNameInput,
       player: newPlayer,
       message: `🎉 ${handle} joined team ${teamNameInput}!`
     });
-
-    if (updatedTeamObj) {
-      syncHub.broadcast('TEAM_STATE_SYNC', { team: updatedTeamObj });
-    }
   };
 
   const handleSwitchPlayer = () => {
     if (player && activeTeamName) {
+      syncHub.untrackPlayer();
       syncHub.broadcast('TEAM_LEAVE', {
         teamName: activeTeamName,
         player,
@@ -301,26 +187,18 @@ export default function App() {
         setCurrentLevelId(nextLvl);
       }
 
-      // Update Team Level in state & broadcast to teammate
-      setTeams(prevTeams => {
-        const safe = Array.isArray(prevTeams) ? prevTeams : [];
-        const newTeams = safe.map(t => {
-          if (t && t.name && t.name.toLowerCase() === activeTeamName.toLowerCase()) {
-            return { ...t, unlockedLevel: Math.max(t.unlockedLevel || 0, nextUnlocked) };
-          }
-          return t;
-        });
-        syncHub.saveStoredRooms(newTeams);
-        return newTeams;
-      });
+      // Update Player Level in Supabase Presence & Broadcast to Teammate
+      if (player && activeTeamName) {
+        syncHub.trackPlayer(activeTeamName, player.handle, player.avatar, nextUnlocked);
 
-      syncHub.broadcast('TEAM_LEVEL_UP', {
-        teamName: activeTeamName,
-        player,
-        unlockedLevel: nextUnlocked,
-        password: currentLevel.password,
-        message: `🔥 ${player?.handle || 'Teammate'} in team ${activeTeamName} solved Level ${currentLevelId}! Password unlocked in Vault!`
-      });
+        syncHub.broadcast('TEAM_LEVEL_UP', {
+          teamName: activeTeamName,
+          player,
+          unlockedLevel: nextUnlocked,
+          password: currentLevel.password,
+          message: `🔥 ${player.handle} in team ${activeTeamName} solved Level ${currentLevelId}! Password unlocked in Vault!`
+        });
+      }
 
       // Check Win Condition (Level 10)
       if (nextLvl >= 10 || nextUnlocked >= 10) {
