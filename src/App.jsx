@@ -63,19 +63,36 @@ export default function App() {
         soundFx.playSuccessChime();
       } else if (event.type === 'TIMER_STATE') {
         setTimerRunning(event.payload.running);
-      } else if (event.type === 'PLAYER_JOIN' || event.type === 'LEVEL_UP' || event.type === 'BOT_LEVEL_UP') {
+      } else if (event.type === 'PLAYER_JOIN' || event.type === 'LEVEL_UP' || event.type === 'BOT_LEVEL_UP' || event.type === 'PLAYER_SYNC') {
         setActivityFeed(prev => [...prev, event]);
-        // Update connected players list
-        const stored = localStorage.getItem('bandit_master_game_data');
-        if (stored) {
-          try {
-            const data = JSON.parse(stored);
-            if (data.players) setConnectedPlayers(data.players);
-          } catch (e) {}
+
+        if (event.payload && event.payload.player) {
+          const incoming = event.payload.player;
+          setConnectedPlayers(prev => {
+            const exists = prev.some(p => p.id === incoming.id || p.handle === incoming.handle);
+            const newList = exists
+              ? prev.map(p => (p.id === incoming.id || p.handle === incoming.handle) ? incoming : p)
+              : [...prev, incoming];
+
+            // Persist merged list to storage
+            const state = syncHub.getStoredState();
+            state.players = newList;
+            syncHub.saveStoredState(state);
+
+            return newList;
+          });
         }
       }
     });
   }, []);
+
+  // Load initial players list on mount & request sync
+  useEffect(() => {
+    const stored = syncHub.getStoredState();
+    if (stored.players) {
+      setConnectedPlayers(stored.players);
+    }
+  }, [syncHub]);
 
   // Timer Tick Interval
   useEffect(() => {
@@ -91,7 +108,7 @@ export default function App() {
   // Handle Player Registration
   const handleJoin = (handle, avatar) => {
     const newPlayer = {
-      id: 'player-' + Date.now(),
+      id: 'player-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
       handle,
       avatar,
       level: 0,
@@ -100,14 +117,16 @@ export default function App() {
     };
     setPlayer(newPlayer);
 
-    // Save & Broadcast Join
-    const state = syncHub.getStoredState();
-    const existing = state.players || [];
-    const updated = [...existing.filter(p => p.id !== newPlayer.id), newPlayer];
-    state.players = updated;
-    syncHub.saveStoredState(state);
-    setConnectedPlayers(updated);
+    // Merge into local list
+    setConnectedPlayers(prev => {
+      const newList = [...prev.filter(p => p.handle !== handle), newPlayer];
+      const state = syncHub.getStoredState();
+      state.players = newList;
+      syncHub.saveStoredState(state);
+      return newList;
+    });
 
+    // Broadcast Join globally to all connected devices over Supabase
     syncHub.broadcast('PLAYER_JOIN', {
       player: newPlayer,
       message: `🎉 Player ${handle} joined the room CTF!`
@@ -127,14 +146,18 @@ export default function App() {
         setCurrentLevelId(nextLvl);
       }
 
-      // Update Player Progress in Storage
+      // Update Player Progress in Storage & Broadcast Globally
       if (player) {
         const updatedPlayer = { ...player, level: nextUnlocked };
         setPlayer(updatedPlayer);
 
-        const state = syncHub.getStoredState();
-        state.players = (state.players || []).map(p => p.id === player.id ? updatedPlayer : p);
-        syncHub.saveStoredState(state);
+        setConnectedPlayers(prev => {
+          const newList = prev.map(p => (p.id === player.id || p.handle === player.handle) ? updatedPlayer : p);
+          const state = syncHub.getStoredState();
+          state.players = newList;
+          syncHub.saveStoredState(state);
+          return newList;
+        });
 
         syncHub.broadcast('LEVEL_UP', {
           player: updatedPlayer,
@@ -163,10 +186,14 @@ export default function App() {
   };
 
   const resetPlayerProgress = (playerId) => {
-    const state = syncHub.getStoredState();
-    state.players = (state.players || []).map(p => p.id === playerId ? { ...p, level: 0 } : p);
-    syncHub.saveStoredState(state);
-    setConnectedPlayers(state.players);
+    setConnectedPlayers(prev => {
+      const newList = prev.map(p => p.id === playerId ? { ...p, level: 0 } : p);
+      const state = syncHub.getStoredState();
+      state.players = newList;
+      syncHub.saveStoredState(state);
+      return newList;
+    });
+
     if (player && player.id === playerId) {
       setUnlockedLevel(0);
       setCurrentLevelId(0);
@@ -174,10 +201,13 @@ export default function App() {
   };
 
   const kickPlayer = (playerId) => {
-    const state = syncHub.getStoredState();
-    state.players = (state.players || []).filter(p => p.id !== playerId);
-    syncHub.saveStoredState(state);
-    setConnectedPlayers(state.players);
+    setConnectedPlayers(prev => {
+      const newList = prev.filter(p => p.id !== playerId);
+      const state = syncHub.getStoredState();
+      state.players = newList;
+      syncHub.saveStoredState(state);
+      return newList;
+    });
   };
 
   const copyToTerminal = (cmd) => {
