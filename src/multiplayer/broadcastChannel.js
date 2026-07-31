@@ -11,7 +11,7 @@ export class MultiplayerSyncHub {
     this.channel = null;
     this.supabaseChannel = null;
     this.initChannel();
-    this.initBotSimulation();
+    this.cleanUpBots();
   }
 
   initChannel() {
@@ -75,48 +75,37 @@ export class MultiplayerSyncHub {
     }
   }
 
-  // Simulated AI Bot Opponents for vibrant CTF environment
-  initBotSimulation() {
-    const bots = [
-      { id: 'bot-1', handle: 'CyberGamer_01', level: 1, attempts: 2, startTime: Date.now() - 30000, avatar: '🤖' },
-      { id: 'bot-2', handle: 'ByteNinja', level: 2, attempts: 3, startTime: Date.now() - 60000, avatar: '🥷' },
-      { id: 'bot-3', handle: 'LinuxNoob', level: 0, attempts: 1, startTime: Date.now() - 10000, avatar: '🐣' }
-    ];
-
-    let storedState = this.getStoredState();
-    if (!storedState.players || storedState.players.length === 0) {
-      storedState.players = bots;
-      this.saveStoredState(storedState);
-    }
-
-    // Periodic bot advancement every 45 seconds
-    setInterval(() => {
-      let state = this.getStoredState();
-      if (!state.players) return;
-
-      const randomBot = state.players.find(p => p.id && p.id.startsWith('bot-') && p.level < 9);
-      if (randomBot) {
-        randomBot.level += 1;
-        randomBot.lastSolvedTime = Date.now();
+  // Remove any legacy bot entries from storage
+  cleanUpBots() {
+    let state = this.getStoredState();
+    if (state.players && state.players.length > 0) {
+      const realPlayers = state.players.filter(p => p.id && !p.id.startsWith('bot-'));
+      if (realPlayers.length !== state.players.length) {
+        state.players = realPlayers;
         this.saveStoredState(state);
-        this.broadcast('BOT_LEVEL_UP', {
-          player: randomBot,
-          message: `🤖 Bot ${randomBot.handle} solved Level ${randomBot.level - 1}!`
-        });
       }
-    }, 45000);
+    }
   }
 
   getStoredState() {
     try {
       const raw = localStorage.getItem('bandit_master_game_data');
-      return raw ? JSON.parse(raw) : { players: [], announcements: [], timer: { running: true, seconds: 0 } };
+      if (!raw) return { players: [], announcements: [], timer: { running: true, seconds: 0 } };
+      
+      const state = JSON.parse(raw);
+      if (state.players) {
+        state.players = state.players.filter(p => p.id && !p.id.startsWith('bot-'));
+      }
+      return state;
     } catch (e) {
       return { players: [], announcements: [], timer: { running: true, seconds: 0 } };
     }
   }
 
   saveStoredState(state) {
+    if (state.players) {
+      state.players = state.players.filter(p => p.id && !p.id.startsWith('bot-'));
+    }
     localStorage.setItem('bandit_master_game_data', JSON.stringify(state));
   }
 }

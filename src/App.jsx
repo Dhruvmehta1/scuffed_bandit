@@ -63,10 +63,10 @@ export default function App() {
         soundFx.playSuccessChime();
       } else if (event.type === 'TIMER_STATE') {
         setTimerRunning(event.payload.running);
-      } else if (event.type === 'PLAYER_JOIN' || event.type === 'LEVEL_UP' || event.type === 'BOT_LEVEL_UP' || event.type === 'PLAYER_SYNC') {
+      } else if (event.type === 'PLAYER_JOIN' || event.type === 'LEVEL_UP' || event.type === 'PLAYER_SYNC') {
         setActivityFeed(prev => [...prev, event]);
 
-        if (event.payload && event.payload.player) {
+        if (event.payload && event.payload.player && (!event.payload.player.id || !event.payload.player.id.startsWith('bot-'))) {
           const incoming = event.payload.player;
           setConnectedPlayers(prev => {
             const exists = prev.some(p => p.id === incoming.id || p.handle === incoming.handle);
@@ -74,12 +74,12 @@ export default function App() {
               ? prev.map(p => (p.id === incoming.id || p.handle === incoming.handle) ? incoming : p)
               : [...prev, incoming];
 
-            // Persist merged list to storage
+            const filtered = newList.filter(p => p.id && !p.id.startsWith('bot-'));
             const state = syncHub.getStoredState();
-            state.players = newList;
+            state.players = filtered;
             syncHub.saveStoredState(state);
 
-            return newList;
+            return filtered;
           });
         }
       }
@@ -90,7 +90,7 @@ export default function App() {
   useEffect(() => {
     const stored = syncHub.getStoredState();
     if (stored.players) {
-      setConnectedPlayers(stored.players);
+      setConnectedPlayers(stored.players.filter(p => p.id && !p.id.startsWith('bot-')));
     }
   }, [syncHub]);
 
@@ -119,7 +119,7 @@ export default function App() {
 
     // Merge into local list
     setConnectedPlayers(prev => {
-      const newList = [...prev.filter(p => p.handle !== handle), newPlayer];
+      const newList = [...prev.filter(p => p.handle !== handle && (!p.id || !p.id.startsWith('bot-'))), newPlayer];
       const state = syncHub.getStoredState();
       state.players = newList;
       syncHub.saveStoredState(state);
@@ -153,10 +153,11 @@ export default function App() {
 
         setConnectedPlayers(prev => {
           const newList = prev.map(p => (p.id === player.id || p.handle === player.handle) ? updatedPlayer : p);
+          const filtered = newList.filter(p => p.id && !p.id.startsWith('bot-'));
           const state = syncHub.getStoredState();
-          state.players = newList;
+          state.players = filtered;
           syncHub.saveStoredState(state);
-          return newList;
+          return filtered;
         });
 
         syncHub.broadcast('LEVEL_UP', {
