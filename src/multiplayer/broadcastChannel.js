@@ -1,16 +1,17 @@
-// Real-Time Multi-Team Sync Engine (Supabase Realtime Presence + Broadcast)
+// Real-Time Multi-Team Sync Engine (Native WebSocket Relay + BroadcastChannel)
 
-import { supabase, isSupabaseConfigured } from './supabaseClient';
+const CHANNEL_NAME = 'bandit_ctf_teams_channel_v5';
+const STORAGE_KEY = 'bandit_ctf_teams_state_v5';
 
-const CHANNEL_NAME = 'bandit_ctf_teams_channel_v4';
-const STORAGE_KEY = 'bandit_ctf_teams_state_v4';
+// Free, Zero-Config Public WebSocket Relay URL (No DB tables or backend needed!)
+const WEBSOCKET_RELAY_URL = 'wss://free.piesocket.com/v3/ctf_bandit_room_2026?api_key=VCx2ivjtEaAfOiStcrMIhhIcDqkyBAA28kO7jEjj&notify_self=1';
 
 export class MultiplayerSyncHub {
   constructor(onEventCallback, onTeamsUpdatedCallback) {
     this.onEventCallback = onEventCallback;
     this.onTeamsUpdatedCallback = onTeamsUpdatedCallback;
     this.channel = null;
-    this.supabaseChannel = null;
+    this.ws = null;
     this.currentTrackData = null;
     this.initChannel();
   }
@@ -36,35 +37,46 @@ export class MultiplayerSyncHub {
       }
     });
 
-    // 3. Supabase Realtime Presence & WebSockets (Global Internet Sync)
-    if (isSupabaseConfigured && supabase) {
-      this.supabaseChannel = supabase.channel('ctf_global_teams_presence', {
-        config: {
-          broadcast: { self: true },
-          presence: { key: 'player_session' }
-        }
-      });
-
-      // Handle presence sync (Automatic cross-device player tracking)
-      this.supabaseChannel
-        .on('presence', { event: 'sync' }, () => {
-          const state = this.supabaseChannel.presenceState();
-          this.processPresenceState(state);
-        })
-        .on('broadcast', { event: 'game_event' }, (envelope) => {
-          if (this.onEventCallback && envelope && envelope.payload) {
-            this.onEventCallback(envelope.payload);
-          }
-        })
-        .subscribe((status) => {
-          if (status === 'SUBSCRIBED' && this.currentTrackData) {
-            this.supabaseChannel.track(this.currentTrackData);
-          }
-        });
-    }
+    // 3. Native WebSocket Relay (Global Internet Cross-Device Sync)
+    this.connectWebSocket();
   }
 
-  // Track active player in Supabase Presence
+  connectWebSocket() {
+    try {
+      this.ws = new WebSocket(WEBSOCKET_RELAY_URL);
+
+      this.ws.onopen = () => {
+        // Request sync from connected clients upon connecting
+        this.broadcast('TEAM_SYNC_REQUEST', { timestamp: Date.now() });
+
+        // If player is already logged in, re-broadcast presence
+        if (this.currentTrackData) {
+          this.broadcast('TEAM_JOIN', {
+            teamName: this.currentTrackData.teamName,
+            player: this.currentTrackData,
+            message: `🎉 ${this.currentTrackData.handle} reconnected!`
+          });
+        }
+      };
+
+      this.ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data && data.type && this.onEventCallback) {
+            this.onEventCallback(data);
+          }
+        } catch (err) {}
+      };
+
+      this.ws.onclose = () => {
+        // Auto-reconnect after 3 seconds if disconnected
+        setTimeout(() => this.connectWebSocket(), 3000);
+      };
+
+      this.ws.onerror = () => {};
+    } catch (e) {}
+  }
+
   trackPlayer(teamName, handle, avatar, level = 0) {
     this.currentTrackData = {
       id: 'player-' + handle.toLowerCase(),
@@ -74,54 +86,10 @@ export class MultiplayerSyncHub {
       level,
       joinedAt: Date.now()
     };
-
-    if (this.supabaseChannel) {
-      this.supabaseChannel.track(this.currentTrackData);
-    }
   }
 
-  // Untrack player on leave
   untrackPlayer() {
     this.currentTrackData = null;
-    if (this.supabaseChannel) {
-      this.supabaseChannel.untrack();
-    }
-  }
-
-  // Process Supabase Presence State into aggregated Teams list
-  processPresenceState(presenceState) {
-    const teamMap = new Map();
-
-    Object.values(presenceState).forEach(presenceList => {
-      if (!Array.isArray(presenceList)) return;
-      presenceList.forEach(user => {
-        if (!user || !user.teamName || !user.handle) return;
-        const tKey = user.teamName.toLowerCase();
-
-        let team = teamMap.get(tKey);
-        if (!team) {
-          team = { name: user.teamName, maxPlayers: 2, players: [], unlockedLevel: 0 };
-          teamMap.set(tKey, team);
-        }
-
-        const exists = team.players.some(p => p.handle.toLowerCase() === user.handle.toLowerCase());
-        if (!exists) {
-          team.players.push({
-            id: user.id || ('player-' + user.handle.toLowerCase()),
-            handle: user.handle,
-            avatar: user.avatar || '⚡'
-          });
-        }
-        team.unlockedLevel = Math.max(team.unlockedLevel || 0, user.level || 0);
-      });
-    });
-
-    const aggregatedTeams = Array.from(teamMap.values());
-    this.saveStoredRooms(aggregatedTeams);
-
-    if (this.onTeamsUpdatedCallback) {
-      this.onTeamsUpdatedCallback(aggregatedTeams);
-    }
   }
 
   broadcast(type, payload) {
@@ -131,19 +99,20 @@ export class MultiplayerSyncHub {
       timestamp: Date.now()
     };
 
+    // Broadcast to local tabs
     if (this.channel) {
       this.channel.postMessage(eventData);
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(eventData));
 
-    if (this.supabaseChannel) {
-      this.supabaseChannel.send({
-        type: 'broadcast',
-        event: 'game_event',
-        payload: eventData
-      });
+    // Broadcast over WebSocket Relay
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      try {
+        this.ws.send(JSON.stringify(eventData));
+      } catch (err) {}
     }
 
+    // Self callback
     if (this.onEventCallback) {
       this.onEventCallback(eventData);
     }
