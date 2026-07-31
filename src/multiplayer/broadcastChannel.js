@@ -43,6 +43,9 @@ export class MultiplayerSyncHub {
       const { data: teamsData, error: tErr } = await supabase.from('ctf_teams').select('*');
       const { data: playersData, error: pErr } = await supabase.from('ctf_players').select('*');
 
+      if (tErr) console.warn('Supabase fetch ctf_teams notice:', tErr.message);
+      if (pErr) console.warn('Supabase fetch ctf_players notice:', pErr.message);
+
       if (tErr || !teamsData) return [];
 
       const players = playersData || [];
@@ -85,20 +88,24 @@ export class MultiplayerSyncHub {
       const pId = `${tName.toLowerCase()}_${pHandle.toLowerCase()}`;
 
       // 1. Upsert Team
-      await supabase.from('ctf_teams').upsert(
+      const { error: tErr } = await supabase.from('ctf_teams').upsert(
         { team_name: tName, updated_at: new Date().toISOString() },
         { onConflict: 'team_name' }
       );
+      if (tErr) console.warn('ctf_teams upsert error:', tErr.message);
 
       // 2. Insert Player (Will not overwrite existing teammates!)
-      await supabase.from('ctf_players').upsert(
+      const { error: pErr } = await supabase.from('ctf_players').upsert(
         { id: pId, team_name: tName, handle: pHandle, avatar },
         { onConflict: 'id' }
       );
+      if (pErr) console.warn('ctf_players upsert error:', pErr.message);
 
       // Fetch and trigger update across all devices
       await this.fetchAndNotifyAllTeams();
-    } catch (e) {}
+    } catch (e) {
+      console.error('registerPlayerToTeam error:', e);
+    }
   }
 
   // Update Team Level in Supabase DB

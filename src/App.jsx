@@ -99,7 +99,7 @@ export default function App() {
     );
   }, []);
 
-  // Fetch all teams from Supabase DB on load and poll every 3 seconds as fail-safe
+  // Fetch all teams from Supabase DB on load and poll every 2 seconds as fail-safe
   useEffect(() => {
     const loadTeams = async () => {
       const dbTeams = await syncHub.fetchAllTeamsFromDatabase();
@@ -109,9 +109,16 @@ export default function App() {
     };
     loadTeams();
 
-    const interval = setInterval(loadTeams, 3000);
+    const interval = setInterval(loadTeams, 2000);
     return () => clearInterval(interval);
   }, [syncHub]);
+
+  // Auto-sync active player to Supabase DB whenever logged in
+  useEffect(() => {
+    if (player && activeTeamName) {
+      syncHub.registerPlayerToTeam(activeTeamName, player.handle, player.avatar);
+    }
+  }, [player, activeTeamName, syncHub]);
 
   // Handle Player Registration / Team Join
   const handleJoin = async (teamNameInput, handle, avatar, isRejoin) => {
