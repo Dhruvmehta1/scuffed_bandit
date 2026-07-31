@@ -1,9 +1,9 @@
 // Supabase Database Table Realtime Sync Hub
 
-import { supabase, isSupabaseConfigured } from './supabaseClient';
+import { supabase } from './supabaseClient';
 
-const CHANNEL_NAME = 'bandit_ctf_teams_channel_v8';
-const STORAGE_KEY = 'bandit_ctf_teams_state_v8';
+const CHANNEL_NAME = 'bandit_ctf_teams_channel_v9';
+const STORAGE_KEY = 'bandit_ctf_teams_state_v9';
 
 export class MultiplayerSyncHub {
   constructor(onEventCallback, onTeamsUpdatedCallback) {
@@ -36,7 +36,7 @@ export class MultiplayerSyncHub {
     });
 
     // 3. Supabase Postgres Realtime Table Subscription
-    if (isSupabaseConfigured && supabase) {
+    if (supabase) {
       try {
         this.supabaseChannel = supabase
           .channel('public:ctf_teams')
@@ -64,24 +64,26 @@ export class MultiplayerSyncHub {
   // Save team to Supabase Database Table
   async saveTeamToDatabase(team) {
     if (!team || !team.name) return;
-    if (isSupabaseConfigured && supabase) {
+    if (supabase) {
       try {
         const payload = {
           id: team.name.toLowerCase().trim(),
           data: team,
           updated_at: new Date().toISOString()
         };
-        const { error } = await supabase.from('ctf_teams').upsert(payload);
+        const { error } = await supabase.from('ctf_teams').upsert(payload, { onConflict: 'id' });
         if (error) {
-          console.warn('Supabase DB Upsert Notice:', error.message);
+          console.warn('Supabase DB Upsert error:', error.message);
         }
-      } catch (e) {}
+      } catch (e) {
+        console.error('Supabase DB Upsert exception:', e);
+      }
     }
   }
 
   // Fetch all teams from Supabase Database Table
   async fetchAllTeamsFromDatabase() {
-    if (isSupabaseConfigured && supabase) {
+    if (supabase) {
       try {
         const { data, error } = await supabase.from('ctf_teams').select('*');
         if (!error && data && Array.isArray(data)) {
