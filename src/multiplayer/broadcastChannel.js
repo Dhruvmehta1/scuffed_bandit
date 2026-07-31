@@ -2,8 +2,8 @@
 
 import { supabase, isSupabaseConfigured } from './supabaseClient';
 
-const CHANNEL_NAME = 'bandit_ctf_teams_channel_v7';
-const STORAGE_KEY = 'bandit_ctf_teams_state_v7';
+const CHANNEL_NAME = 'bandit_ctf_teams_channel_v8';
+const STORAGE_KEY = 'bandit_ctf_teams_state_v8';
 
 export class MultiplayerSyncHub {
   constructor(onEventCallback, onTeamsUpdatedCallback) {
@@ -66,11 +66,15 @@ export class MultiplayerSyncHub {
     if (!team || !team.name) return;
     if (isSupabaseConfigured && supabase) {
       try {
-        await supabase.from('ctf_teams').upsert({
+        const payload = {
           id: team.name.toLowerCase().trim(),
           data: team,
           updated_at: new Date().toISOString()
-        });
+        };
+        const { error } = await supabase.from('ctf_teams').upsert(payload);
+        if (error) {
+          console.warn('Supabase DB Upsert Notice:', error.message);
+        }
       } catch (e) {}
     }
   }
