@@ -1,6 +1,16 @@
-// Supabase Relational Database Sync Hub (ctf_teams + ctf_players)
+// Supabase Direct REST API Sync Engine (Guaranteed HTTP Fetch)
 
 import { supabase } from './supabaseClient';
+
+const SUPABASE_URL = 'https://fdafaaozhnoymppohicf.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkYWZhYW96aG5veW1wcG9oaWNmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU1MTY1MDYsImV4cCI6MjEwMTA5MjUwNn0.pwb7PSkPuDeOt_ghMa8ydyIa-wdTt6h33OPy82eyoPI';
+
+const HEADERS = {
+  'apikey': SUPABASE_ANON_KEY,
+  'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+  'Content-Type': 'application/json',
+  'Prefer': 'resolution=merge-duplicates'
+};
 
 export class MultiplayerSyncHub {
   constructor(onEventCallback, onTeamsUpdatedCallback) {
@@ -13,7 +23,6 @@ export class MultiplayerSyncHub {
   initChannel() {
     if (supabase) {
       try {
-        // Subscribe to live database changes on ctf_teams & ctf_players
         this.supabaseChannel = supabase
           .channel('public_ctf_realtime_db')
           .on(
@@ -36,22 +45,28 @@ export class MultiplayerSyncHub {
     }
   }
 
-  // Fetch all teams & join their players from Supabase Relational Database
+  // Fetch all teams & join players via Supabase Direct REST API
   async fetchAllTeamsFromDatabase() {
-    if (!supabase) return [];
     try {
-      const { data: teamsData, error: tErr } = await supabase.from('ctf_teams').select('*');
-      const { data: playersData, error: pErr } = await supabase.from('ctf_players').select('*');
+      const resT = await fetch(`${SUPABASE_URL}/rest/v1/ctf_teams?select=*`, {
+        headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` }
+      });
+      const resP = await fetch(`${SUPABASE_URL}/rest/v1/ctf_players?select=*`, {
+        headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` }
+      });
 
-      if (tErr) console.warn('Supabase fetch ctf_teams notice:', tErr.message);
-      if (pErr) console.warn('Supabase fetch ctf_players notice:', pErr.message);
+      if (!resT.ok) return [];
 
-      if (tErr || !teamsData) return [];
+      const teamsData = await resT.json();
+      const playersData = resP.ok ? await resP.json() : [];
 
-      const players = playersData || [];
+      if (!Array.isArray(teamsData)) return [];
+
+      const players = Array.isArray(playersData) ? playersData : [];
+
       const formattedTeams = teamsData.map(t => {
         const teamPlayers = players
-          .filter(p => p.team_name && p.team_name.toLowerCase() === t.team_name.toLowerCase())
+          .filter(p => p.team_name && p.team_name.toLowerCase() === (t.team_name || '').toLowerCase())
           .map(p => ({
             id: p.id,
             handle: p.handle,
@@ -79,44 +94,43 @@ export class MultiplayerSyncHub {
     }
   }
 
-  // Register / Join Player to Team in Supabase DB
+  // Register / Join Player to Team via Supabase Direct REST API
   async registerPlayerToTeam(teamName, handle, avatar = '⚡') {
-    if (!supabase || !teamName || !handle) return;
+    if (!teamName || !handle) return;
     try {
       const tName = teamName.trim();
       const pHandle = handle.trim();
       const pId = `${tName.toLowerCase()}_${pHandle.toLowerCase()}`;
 
       // 1. Upsert Team
-      const { error: tErr } = await supabase.from('ctf_teams').upsert(
-        { team_name: tName, updated_at: new Date().toISOString() },
-        { onConflict: 'team_name' }
-      );
-      if (tErr) console.warn('ctf_teams upsert error:', tErr.message);
+      await fetch(`${SUPABASE_URL}/rest/v1/ctf_teams`, {
+        method: 'POST',
+        headers: HEADERS,
+        body: JSON.stringify({ team_name: tName, updated_at: new Date().toISOString() })
+      });
 
-      // 2. Insert Player (Will not overwrite existing teammates!)
-      const { error: pErr } = await supabase.from('ctf_players').upsert(
-        { id: pId, team_name: tName, handle: pHandle, avatar },
-        { onConflict: 'id' }
-      );
-      if (pErr) console.warn('ctf_players upsert error:', pErr.message);
+      // 2. Upsert Player (Will not overwrite existing teammates!)
+      await fetch(`${SUPABASE_URL}/rest/v1/ctf_players`, {
+        method: 'POST',
+        headers: HEADERS,
+        body: JSON.stringify({ id: pId, team_name: tName, handle: pHandle, avatar })
+      });
 
-      // Fetch and trigger update across all devices
+      // Fetch and notify
       await this.fetchAndNotifyAllTeams();
-    } catch (e) {
-      console.error('registerPlayerToTeam error:', e);
-    }
+    } catch (e) {}
   }
 
-  // Update Team Level in Supabase DB
+  // Update Team Level via Supabase Direct REST API
   async updateTeamLevel(teamName, unlockedLevel) {
-    if (!supabase || !teamName) return;
+    if (!teamName) return;
     try {
       const tName = teamName.trim();
-      await supabase.from('ctf_teams').upsert(
-        { team_name: tName, unlocked_level: unlockedLevel, updated_at: new Date().toISOString() },
-        { onConflict: 'team_name' }
-      );
+      await fetch(`${SUPABASE_URL}/rest/v1/ctf_teams`, {
+        method: 'POST',
+        headers: HEADERS,
+        body: JSON.stringify({ team_name: tName, unlocked_level: unlockedLevel, updated_at: new Date().toISOString() })
+      });
 
       await this.fetchAndNotifyAllTeams();
     } catch (e) {}
