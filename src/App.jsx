@@ -46,9 +46,15 @@ export default function App() {
   // Terminal Input State
   const [cmdInputValue, setCmdInputValue] = useState('');
 
+  // Clear legacy stored session on load so Login Modal pops up on every refresh
+  useEffect(() => {
+    localStorage.removeItem('bandit_active_player');
+  }, []);
+
   // Find active team object
   const activeTeamData = useMemo(() => {
-    return teams.find(t => t.name.toLowerCase() === activeTeamName.toLowerCase()) || { name: activeTeamName, unlockedLevel: 0, players: [] };
+    const safeTeams = Array.isArray(teams) ? teams : [];
+    return safeTeams.find(t => t && t.name && t.name.toLowerCase() === activeTeamName.toLowerCase()) || { name: activeTeamName, unlockedLevel: 0, players: [] };
   }, [teams, activeTeamName]);
 
   // Sync level state with active team data
@@ -89,18 +95,19 @@ export default function App() {
           const incomingLevel = event.payload.unlockedLevel;
 
           setTeams(prevTeams => {
-            let targetTeam = prevTeams.find(t => t.name.toLowerCase() === tName.toLowerCase());
+            const safe = Array.isArray(prevTeams) ? prevTeams : [];
+            let targetTeam = safe.find(t => t && t.name && t.name.toLowerCase() === tName.toLowerCase());
             if (!targetTeam) {
               targetTeam = { name: tName, maxPlayers: 2, players: [], unlockedLevel: 0 };
             }
 
-            let updatedPlayers = [...targetTeam.players];
+            let updatedPlayers = Array.isArray(targetTeam.players) ? [...targetTeam.players] : [];
 
             if (event.type === 'TEAM_JOIN' && incomingPlayer) {
-              const exists = updatedPlayers.some(p => p.handle.toLowerCase() === incomingPlayer.handle.toLowerCase());
+              const exists = updatedPlayers.some(p => p && p.handle && p.handle.toLowerCase() === incomingPlayer.handle.toLowerCase());
               if (!exists) updatedPlayers.push(incomingPlayer);
             } else if (event.type === 'TEAM_LEAVE' && incomingPlayer) {
-              updatedPlayers = updatedPlayers.filter(p => p.handle.toLowerCase() !== incomingPlayer.handle.toLowerCase());
+              updatedPlayers = updatedPlayers.filter(p => p && p.handle && p.handle.toLowerCase() !== incomingPlayer.handle.toLowerCase());
             }
 
             const updatedTeam = {
@@ -109,8 +116,8 @@ export default function App() {
               unlockedLevel: incomingLevel !== undefined ? Math.max(targetTeam.unlockedLevel || 0, incomingLevel) : targetTeam.unlockedLevel
             };
 
-            const newTeams = prevTeams.map(t => t.name.toLowerCase() === tName.toLowerCase() ? updatedTeam : t);
-            if (!prevTeams.some(t => t.name.toLowerCase() === tName.toLowerCase())) {
+            const newTeams = safe.map(t => (t && t.name && t.name.toLowerCase() === tName.toLowerCase()) ? updatedTeam : t);
+            if (!safe.some(t => t && t.name && t.name.toLowerCase() === tName.toLowerCase())) {
               newTeams.push(updatedTeam);
             }
 
@@ -174,17 +181,19 @@ export default function App() {
 
     // Update local teams state
     setTeams(prevTeams => {
-      let target = prevTeams.find(t => t.name.toLowerCase() === teamNameInput.toLowerCase());
+      const safe = Array.isArray(prevTeams) ? prevTeams : [];
+      let target = safe.find(t => t && t.name && t.name.toLowerCase() === teamNameInput.toLowerCase());
       if (!target) {
         target = { name: teamNameInput, maxPlayers: 2, players: [], unlockedLevel: 0 };
       }
 
-      const exists = target.players.some(p => p.handle.toLowerCase() === handle.toLowerCase());
-      const updatedPlayers = exists ? target.players : [...target.players, newPlayer];
+      const existingPlayers = Array.isArray(target.players) ? target.players : [];
+      const exists = existingPlayers.some(p => p && p.handle && p.handle.toLowerCase() === handle.toLowerCase());
+      const updatedPlayers = exists ? existingPlayers : [...existingPlayers, newPlayer];
 
       const updatedTeam = { ...target, players: updatedPlayers };
-      const newTeams = prevTeams.map(t => t.name.toLowerCase() === teamNameInput.toLowerCase() ? updatedTeam : t);
-      if (!prevTeams.some(t => t.name.toLowerCase() === teamNameInput.toLowerCase())) {
+      const newTeams = safe.map(t => (t && t.name && t.name.toLowerCase() === teamNameInput.toLowerCase()) ? updatedTeam : t);
+      if (!safe.some(t => t && t.name && t.name.toLowerCase() === teamNameInput.toLowerCase())) {
         newTeams.push(updatedTeam);
       }
 
@@ -226,8 +235,9 @@ export default function App() {
 
       // Update Team Level in state & broadcast to teammate
       setTeams(prevTeams => {
-        const newTeams = prevTeams.map(t => {
-          if (t.name.toLowerCase() === activeTeamName.toLowerCase()) {
+        const safe = Array.isArray(prevTeams) ? prevTeams : [];
+        const newTeams = safe.map(t => {
+          if (t && t.name && t.name.toLowerCase() === activeTeamName.toLowerCase()) {
             return { ...t, unlockedLevel: Math.max(t.unlockedLevel || 0, nextUnlocked) };
           }
           return t;
@@ -266,7 +276,8 @@ export default function App() {
 
   const resetTeamProgress = (teamName) => {
     setTeams(prevTeams => {
-      const newTeams = prevTeams.map(t => t.name.toLowerCase() === teamName.toLowerCase() ? { ...t, unlockedLevel: 0 } : t);
+      const safe = Array.isArray(prevTeams) ? prevTeams : [];
+      const newTeams = safe.map(t => (t && t.name && t.name.toLowerCase() === teamName.toLowerCase()) ? { ...t, unlockedLevel: 0 } : t);
       syncHub.saveStoredRooms(newTeams);
       return newTeams;
     });
@@ -279,7 +290,8 @@ export default function App() {
 
   const clearTeamPlayers = (teamName) => {
     setTeams(prevTeams => {
-      const newTeams = prevTeams.map(t => t.name.toLowerCase() === teamName.toLowerCase() ? { ...t, players: [] } : t);
+      const safe = Array.isArray(prevTeams) ? prevTeams : [];
+      const newTeams = safe.map(t => (t && t.name && t.name.toLowerCase() === teamName.toLowerCase()) ? { ...t, players: [] } : t);
       syncHub.saveStoredRooms(newTeams);
       return newTeams;
     });

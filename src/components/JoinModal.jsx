@@ -4,7 +4,7 @@ import { soundFx } from '../utils/audio';
 
 const AVATARS = ['⚡', '👾', '🚀', '🥷', '🛡️', '💻', '🔮', '🔥'];
 
-export function JoinModal({ teams, onJoin }) {
+export function JoinModal({ teams = [], onJoin }) {
   const [teamName, setTeamName] = useState('');
   const [handle, setHandle] = useState('');
   const [avatar, setAvatar] = useState('⚡');
@@ -12,9 +12,10 @@ export function JoinModal({ teams, onJoin }) {
 
   const formattedTeamName = teamName.trim();
 
-  // Find existing team data
-  const existingTeam = teams.find(t => t.name.toLowerCase() === formattedTeamName.toLowerCase());
-  const currentCount = existingTeam ? existingTeam.players.length : 0;
+  // Safe team lookup
+  const safeTeams = Array.isArray(teams) ? teams : [];
+  const existingTeam = safeTeams.find(t => t && t.name && t.name.toLowerCase() === formattedTeamName.toLowerCase());
+  const currentCount = existingTeam && Array.isArray(existingTeam.players) ? existingTeam.players.length : 0;
   const maxAllowed = 2;
 
   const handleSubmit = (e) => {
@@ -34,10 +35,10 @@ export function JoinModal({ teams, onJoin }) {
     }
 
     // Check if player is rejoining existing session in team
-    const isRejoin = existingTeam && existingTeam.players.some(p => p.handle.toLowerCase() === handle.trim().toLowerCase());
+    const isRejoin = existingTeam && Array.isArray(existingTeam.players) && existingTeam.players.some(p => p && p.handle && p.handle.toLowerCase() === handle.trim().toLowerCase());
 
     // Team capacity check (max 2 players per team) if not rejoining
-    if (!isRejoin && existingTeam && existingTeam.players.length >= maxAllowed) {
+    if (!isRejoin && existingTeam && Array.isArray(existingTeam.players) && existingTeam.players.length >= maxAllowed) {
       setError(`Team "${formattedTeamName}" is already full (${currentCount}/${maxAllowed} teammates). Enter your exact username to rejoin or choose a different Team Name.`);
       soundFx.playErrorBeep();
       return;
@@ -48,7 +49,7 @@ export function JoinModal({ teams, onJoin }) {
   };
 
   return (
-    <div className="modal-overlay join-overlay">
+    <div className="modal-overlay join-overlay" style={{ zIndex: 9999 }}>
       <div className="modal-content join-modal">
         <div className="join-header">
           <Shield className="join-logo" />
