@@ -1,16 +1,16 @@
 import React, { useState } from 'react';
-import { ShieldAlert, Trophy, Radio, Play, Pause, RotateCcw, Download, X, Lock, CheckCircle2, Award, UserX } from 'lucide-react';
+import { ShieldAlert, Trophy, Radio, Play, Pause, RotateCcw, Download, X, Lock, CheckCircle2, Award, Users, Trash2 } from 'lucide-react';
 import { soundFx } from '../utils/audio';
 
 export function AdminDashboard({
   isOpen,
   onClose,
-  players,
+  teams,
   broadcastAnnouncement,
   timer,
   setTimerState,
-  resetPlayerProgress,
-  kickPlayer
+  resetTeamProgress,
+  clearTeamPlayers
 }) {
   const [adminPass, setAdminPass] = useState('');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -43,29 +43,30 @@ export function AdminDashboard({
   };
 
   const handleExportCSV = () => {
-    const headers = ['Rank', 'Handle', 'Current Level', 'Solved Count', 'Status'];
-    const rows = players.map((p, idx) => [
+    const headers = ['Rank', 'Team Name', 'Connected Teammates', 'Current Level', 'Solved Progress', 'Status'];
+    const rows = sortedTeams.map((t, idx) => [
       idx + 1,
-      `"${p.handle}"`,
-      p.level || 0,
-      `${p.level || 0}/10`,
-      p.level >= 10 ? 'WINNER' : 'PLAYING'
+      `"${t.name}"`,
+      `"${t.players.map(p => p.handle).join(', ')}"`,
+      t.unlockedLevel || 0,
+      `${t.unlockedLevel || 0}/10`,
+      (t.unlockedLevel || 0) >= 10 ? 'WINNER' : 'PLAYING'
     ]);
 
-    const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const csvContent = [headers.join(','), ...rows.map(row => row.join(','))].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `bandit_ctf_leaderboard_${Date.now()}.csv`);
+    link.setAttribute('download', `bandit_ctf_teams_leaderboard_${Date.now()}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     soundFx.playKeyClick();
   };
 
-  // Sort players by highest level solved first
-  const sortedPlayers = [...players].sort((a, b) => (b.level || 0) - (a.level || 0));
+  // Sort teams by highest unlocked level first
+  const sortedTeams = [...teams].sort((a, b) => (b.unlockedLevel || 0) - (a.unlockedLevel || 0));
 
   return (
     <div className="modal-overlay">
@@ -73,7 +74,7 @@ export function AdminDashboard({
         <div className="modal-header admin-header">
           <div className="modal-title">
             <ShieldAlert className="modal-icon text-red" />
-            <h2>ADMIN DASHBOARD • EXCLUSIVE LEADERBOARD</h2>
+            <h2>ADMIN DASHBOARD • EXCLUSIVE TEAM LEADERBOARD</h2>
           </div>
           <button className="close-btn" onClick={onClose}>
             <X />
@@ -84,8 +85,8 @@ export function AdminDashboard({
           /* Admin Password Screen */
           <div className="admin-auth-box">
             <Lock className="auth-lock-icon" />
-            <h3>RESTRICTED ACCESS AREA</h3>
-            <p>Leaderboard & CTF Master controls are restricted to Event Admins.</p>
+            <h3>RESTRICTED ADMIN DASHBOARD</h3>
+            <p>Master CTF Team Leaderboard & CTF controls are restricted to Event Admins.</p>
             <form onSubmit={handleLogin} className="auth-form">
               <input
                 type="password"
@@ -125,7 +126,7 @@ export function AdminDashboard({
                 <input
                   type="text"
                   className="input-field broadcast-input"
-                  placeholder="Broadcast message to all active players..."
+                  placeholder="Broadcast alert message to all teams..."
                   value={broadcastText}
                   onChange={(e) => setBroadcastText(e.target.value)}
                 />
@@ -142,16 +143,16 @@ export function AdminDashboard({
 
             {broadcastSent && (
               <div className="broadcast-toast">
-                <CheckCircle2 className="toast-icon" /> Broadcast alert sent live to all player screens!
+                <CheckCircle2 className="toast-icon" /> Broadcast alert sent live across all CTF teams!
               </div>
             )}
 
-            {/* EXCLUSIVE LEADERBOARD MATRIX */}
+            {/* EXCLUSIVE MULTI-TEAM LEADERBOARD */}
             <div className="leaderboard-section">
               <div className="section-title">
                 <Trophy className="title-icon text-gold" />
-                <h3>EXCLUSIVE LIVE CTF LEADERBOARD MATRIX</h3>
-                <span className="player-count">Connected Players: {sortedPlayers.length}</span>
+                <h3>EXCLUSIVE LIVE TEAM LEADERBOARD MATRIX</h3>
+                <span className="player-count">Active Teams: {sortedTeams.length}</span>
               </div>
 
               <div className="table-wrapper">
@@ -159,25 +160,26 @@ export function AdminDashboard({
                   <thead>
                     <tr>
                       <th>RANK</th>
-                      <th>PLAYER HANDLE</th>
+                      <th>TEAM NAME</th>
+                      <th>CONNECTED TEAMMATES (MAX 2)</th>
                       <th>CURRENT LEVEL</th>
-                      <th>SOLVED COUNT</th>
+                      <th>PROGRESS</th>
                       <th>STATUS</th>
                       <th>ACTIONS</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {sortedPlayers.length === 0 ? (
+                    {sortedTeams.length === 0 ? (
                       <tr>
-                        <td colSpan="6" className="text-center">No active players registered yet.</td>
+                        <td colSpan="7" className="text-center">No active teams created yet.</td>
                       </tr>
                     ) : (
-                      sortedPlayers.map((player, idx) => {
+                      sortedTeams.map((team, idx) => {
                         const rank = idx + 1;
-                        const isWinner = (player.level || 0) >= 10;
+                        const isWinner = (team.unlockedLevel || 0) >= 10;
 
                         return (
-                          <tr key={player.id || idx} className={isWinner ? 'row-winner' : ''}>
+                          <tr key={team.name} className={isWinner ? 'row-winner' : ''}>
                             <td className="rank-cell">
                               {rank === 1 ? (
                                 <span className="badge rank-1"><Award className="badge-icon" /> 1st</span>
@@ -190,22 +192,36 @@ export function AdminDashboard({
                               )}
                             </td>
 
-                            <td className="player-cell">
-                              <span className="player-avatar">{player.avatar || '👤'}</span>
-                              <strong className="player-name">{player.handle}</strong>
+                            <td className="room-code-cell">
+                              <strong className="room-code-badge">{team.name}</strong>
+                            </td>
+
+                            <td className="teammates-cell">
+                              {team.players.length === 0 ? (
+                                <span className="text-muted italic">Empty (0/2)</span>
+                              ) : (
+                                <div className="teammates-pills">
+                                  {team.players.map((p, pIdx) => (
+                                    <span key={pIdx} className="teammate-pill">
+                                      <span className="avatar-mini">{p.avatar || '👤'}</span> {p.handle}
+                                    </span>
+                                  ))}
+                                  <span className="count-tag">{team.players.length}/2</span>
+                                </div>
+                              )}
                             </td>
 
                             <td>
-                              <span className="level-badge">Level {player.level || 0}</span>
+                              <span className="level-badge">Level {team.unlockedLevel || 0}</span>
                             </td>
 
                             <td>
                               <div className="mini-progress">
-                                <span>{player.level || 0} / 10</span>
+                                <span>{team.unlockedLevel || 0} / 10</span>
                                 <div className="mini-bar-bg">
                                   <div
                                     className="mini-bar-fill"
-                                    style={{ width: `${Math.min(((player.level || 0) / 10) * 100, 100)}%` }}
+                                    style={{ width: `${Math.min(((team.unlockedLevel || 0) / 10) * 100, 100)}%` }}
                                   ></div>
                                 </div>
                               </div>
@@ -213,9 +229,9 @@ export function AdminDashboard({
 
                             <td>
                               {isWinner ? (
-                                <span className="status-tag status-win">🏆 WINNER</span>
+                                <span className="status-tag status-win">🏆 WINNERS</span>
                               ) : (
-                                <span className="status-tag status-active">ONLINE</span>
+                                <span className="status-tag status-active">ACTIVE</span>
                               )}
                             </td>
 
@@ -223,17 +239,17 @@ export function AdminDashboard({
                               <div className="action-row">
                                 <button
                                   className="btn action-btn btn-reset"
-                                  onClick={() => resetPlayerProgress(player.id)}
-                                  title="Reset Level to 0"
+                                  onClick={() => resetTeamProgress(team.name)}
+                                  title="Reset Team Progress to Level 0"
                                 >
                                   <RotateCcw className="btn-icon-xs" /> Reset
                                 </button>
                                 <button
                                   className="btn action-btn btn-kick"
-                                  onClick={() => kickPlayer(player.id)}
-                                  title="Remove Player"
+                                  onClick={() => clearTeamPlayers(team.name)}
+                                  title="Clear Teammates from Team"
                                 >
-                                  <UserX className="btn-icon-xs" /> Kick
+                                  <Trash2 className="btn-icon-xs" /> Clear
                                 </button>
                               </div>
                             </td>

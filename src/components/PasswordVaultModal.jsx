@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { Key, Copy, Check, X, ShieldCheck } from 'lucide-react';
+import { Key, Copy, Check, X, ShieldCheck, Users } from 'lucide-react';
 import { soundFx } from '../utils/audio';
 
-export function PasswordVaultModal({ isOpen, onClose, levels, unlockedLevel }) {
+export function PasswordVaultModal({ isOpen, onClose, levels, unlockedLevel, teamName }) {
   const [copiedIdx, setCopiedIdx] = useState(null);
 
   if (!isOpen) return null;
@@ -20,7 +20,7 @@ export function PasswordVaultModal({ isOpen, onClose, levels, unlockedLevel }) {
         <div className="modal-header">
           <div className="modal-title">
             <Key className="modal-icon text-yellow" />
-            <h2>PASSWORD VAULT • DISCOVERED KEYS</h2>
+            <h2>SHARED VAULT • TEAM: {teamName || 'YOUR TEAM'}</h2>
           </div>
           <button className="close-btn" onClick={onClose}>
             <X />
@@ -28,15 +28,18 @@ export function PasswordVaultModal({ isOpen, onClose, levels, unlockedLevel }) {
         </div>
 
         <div className="vault-body">
-          <p className="vault-intro">
-            Vault stores passwords for levels you have already completed. Complete levels in the terminal to unlock their keys!
-          </p>
+          <div className="vault-intro-card">
+            <Users className="icon-sm text-cyan" />
+            <p>
+              This Vault is shared live between both teammates in <strong>{teamName || 'your team'}</strong>. When either teammate solves a level, the password unlocks here instantly!
+            </p>
+          </div>
 
           <div className="vault-list">
             {levels.map((lvl, idx) => {
               if (idx >= 10) return null; // Skip Level 10 Victory entry
               
-              // Key for level 'idx' is only revealed after the player has solved level 'idx' (unlockedLevel > idx)
+              // Unlocked if team level progress is greater than idx
               const isSolved = unlockedLevel > idx;
 
               return (
@@ -44,7 +47,7 @@ export function PasswordVaultModal({ isOpen, onClose, levels, unlockedLevel }) {
                   <div className="vault-card-header">
                     <span className="vault-level-name">{lvl.name} (Key for {lvl.nextUser})</span>
                     {isSolved ? (
-                      <span className="vault-status unlocked-tag"><ShieldCheck className="icon-xs" /> SOLVED</span>
+                      <span className="vault-status unlocked-tag"><ShieldCheck className="icon-xs" /> UNLOCKED FOR TEAM</span>
                     ) : (
                       <span className="vault-status locked-tag">🔒 LOCKED</span>
                     )}
@@ -63,7 +66,7 @@ export function PasswordVaultModal({ isOpen, onClose, levels, unlockedLevel }) {
                         </button>
                       </div>
                     ) : (
-                      <span className="locked-msg">Solve {lvl.name} in the terminal to reveal this key.</span>
+                      <span className="locked-msg">Either teammate can solve {lvl.name} to reveal this key.</span>
                     )}
                   </div>
                 </div>

@@ -16,10 +16,13 @@ import { PasswordVaultModal } from './components/PasswordVaultModal';
 import { soundFx } from './utils/audio';
 
 export default function App() {
-  // Player state starts null on refresh so user must join fresh
+  // Player session starts null on refresh so user must enter Team Name & Username
   const [player, setPlayer] = useState(null);
+  const [activeTeamName, setActiveTeamName] = useState('');
 
-  const [roomCode] = useState('BANDIT-' + Math.floor(1000 + Math.random() * 9000));
+  // Teams state
+  const [teams, setTeams] = useState([]);
+
   const [currentLevelId, setCurrentLevelId] = useState(0);
   const [unlockedLevel, setUnlockedLevel] = useState(0);
   const [timerSeconds, setTimerSeconds] = useState(0);
@@ -39,10 +42,22 @@ export default function App() {
   // Live Broadcast & Activity Ticker
   const [activityFeed, setActivityFeed] = useState([]);
   const [adminBanner, setAdminBanner] = useState(null);
-  const [connectedPlayers, setConnectedPlayers] = useState([]);
 
   // Terminal Input State
   const [cmdInputValue, setCmdInputValue] = useState('');
+
+  // Find active team object
+  const activeTeamData = useMemo(() => {
+    return teams.find(t => t.name.toLowerCase() === activeTeamName.toLowerCase()) || { name: activeTeamName, unlockedLevel: 0, players: [] };
+  }, [teams, activeTeamName]);
+
+  // Sync level state with active team data
+  useEffect(() => {
+    if (activeTeamData && activeTeamData.unlockedLevel !== undefined) {
+      setUnlockedLevel(activeTeamData.unlockedLevel);
+      setCurrentLevelId(Math.min(activeTeamData.unlockedLevel, LEVELS.length - 1));
+    }
+  }, [activeTeamData.unlockedLevel]);
 
   // Initialize VFS for current level
   const currentLevel = LEVELS[currentLevelId] || LEVELS[0];
@@ -55,7 +70,7 @@ export default function App() {
     return new ShellEngine(vfs);
   }, [vfs]);
 
-  // Real-time Multiplayer Hub initialization
+  // Real-time Multi-Team Sync Hub
   const syncHub = useMemo(() => {
     return new MultiplayerSyncHub((event) => {
       if (!event) return;
@@ -65,49 +80,64 @@ export default function App() {
         soundFx.playSuccessChime();
       } else if (event.type === 'TIMER_STATE') {
         setTimerRunning(event.payload.running);
-      } else if (event.type === 'PLAYER_JOIN' || event.type === 'LEVEL_UP' || event.type === 'PLAYER_SYNC') {
+      } else if (event.type === 'TEAM_JOIN' || event.type === 'TEAM_LEVEL_UP' || event.type === 'TEAM_LEAVE') {
         setActivityFeed(prev => [...prev, event]);
 
-        if (event.payload && event.payload.player && (!event.payload.player.id || !event.payload.player.id.startsWith('bot-'))) {
-          const incoming = event.payload.player;
-          setConnectedPlayers(prev => {
-            const exists = prev.some(p => p.id === incoming.id || p.handle.toLowerCase() === incoming.handle.toLowerCase());
-            const newList = exists
-              ? prev.map(p => (p.id === incoming.id || p.handle.toLowerCase() === incoming.handle.toLowerCase()) ? incoming : p)
-              : [...prev, incoming];
+        if (event.payload && event.payload.teamName) {
+          const tName = event.payload.teamName;
+          const incomingPlayer = event.payload.player;
+          const incomingLevel = event.payload.unlockedLevel;
 
-            const filtered = newList.filter(p => p.id && !p.id.startsWith('bot-'));
-            const state = syncHub.getStoredState();
-            state.players = filtered;
-            syncHub.saveStoredState(state);
+          setTeams(prevTeams => {
+            let targetTeam = prevTeams.find(t => t.name.toLowerCase() === tName.toLowerCase());
+            if (!targetTeam) {
+              targetTeam = { name: tName, maxPlayers: 2, players: [], unlockedLevel: 0 };
+            }
 
-            return filtered;
-          });
-        }
-      } else if (event.type === 'PLAYER_LEAVE') {
-        setActivityFeed(prev => [...prev, event]);
+            let updatedPlayers = [...targetTeam.players];
 
-        if (event.payload && event.payload.player) {
-          const leaving = event.payload.player;
-          setConnectedPlayers(prev => {
-            const newList = prev.filter(p => p.id !== leaving.id && p.handle.toLowerCase() !== leaving.handle.toLowerCase());
-            const state = syncHub.getStoredState();
-            state.players = newList;
-            syncHub.saveStoredState(state);
-            return newList;
+            if (event.type === 'TEAM_JOIN' && incomingPlayer) {
+              const exists = updatedPlayers.some(p => p.handle.toLowerCase() === incomingPlayer.handle.toLowerCase());
+              if (!exists) updatedPlayers.push(incomingPlayer);
+            } else if (event.type === 'TEAM_LEAVE' && incomingPlayer) {
+              updatedPlayers = updatedPlayers.filter(p => p.handle.toLowerCase() !== incomingPlayer.handle.toLowerCase());
+            }
+
+            const updatedTeam = {
+              ...targetTeam,
+              players: updatedPlayers,
+              unlockedLevel: incomingLevel !== undefined ? Math.max(targetTeam.unlockedLevel || 0, incomingLevel) : targetTeam.unlockedLevel
+            };
+
+            const newTeams = prevTeams.map(t => t.name.toLowerCase() === tName.toLowerCase() ? updatedTeam : t);
+            if (!prevTeams.some(t => t.name.toLowerCase() === tName.toLowerCase())) {
+              newTeams.push(updatedTeam);
+            }
+
+            syncHub.saveStoredRooms(newTeams);
+            return newTeams;
           });
         }
       }
     });
   }, []);
 
-  // Broadcast PLAYER_LEAVE when browser tab is refreshed or closed
+  // Load stored teams on mount
+  useEffect(() => {
+    const stored = syncHub.getStoredRooms();
+    if (stored && Array.isArray(stored)) {
+      setTeams(stored);
+    }
+  }, [syncHub]);
+
+  // Broadcast TEAM_LEAVE on refresh/unload
   useEffect(() => {
     const handleBeforeUnload = () => {
-      if (player) {
-        syncHub.broadcast('PLAYER_LEAVE', {
+      if (player && activeTeamName) {
+        syncHub.broadcast('TEAM_LEAVE', {
+          teamName: activeTeamName,
           player,
-          message: `👋 Player ${player.handle} left the game.`
+          message: `👋 ${player.handle} left ${activeTeamName}.`
         });
       }
     };
@@ -116,15 +146,7 @@ export default function App() {
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [player, syncHub]);
-
-  // Load initial players list on mount
-  useEffect(() => {
-    const stored = syncHub.getStoredState();
-    if (stored.players) {
-      setConnectedPlayers(stored.players.filter(p => p.id && !p.id.startsWith('bot-')));
-    }
-  }, [syncHub]);
+  }, [player, activeTeamName, syncHub]);
 
   // Timer Tick Interval
   useEffect(() => {
@@ -137,49 +159,59 @@ export default function App() {
     return () => clearInterval(interval);
   }, [timerRunning]);
 
-  // Handle Player Registration / Join
-  const handleJoin = (handle, avatar) => {
+  // Handle Player Registration / Team Join
+  const handleJoin = (teamNameInput, handle, avatar, isRejoin) => {
+    setActiveTeamName(teamNameInput);
+
     const newPlayer = {
       id: 'player-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
       handle,
       avatar,
-      level: 0,
-      attempts: 0,
       startTime: Date.now()
     };
 
     setPlayer(newPlayer);
-    setUnlockedLevel(0);
-    setCurrentLevelId(0);
 
-    // Add to connected players list
-    setConnectedPlayers(prev => {
-      const filtered = prev.filter(p => p.handle.toLowerCase() !== handle.toLowerCase());
-      const newList = [...filtered, newPlayer];
-      const state = syncHub.getStoredState();
-      state.players = newList;
-      syncHub.saveStoredState(state);
-      return newList;
+    // Update local teams state
+    setTeams(prevTeams => {
+      let target = prevTeams.find(t => t.name.toLowerCase() === teamNameInput.toLowerCase());
+      if (!target) {
+        target = { name: teamNameInput, maxPlayers: 2, players: [], unlockedLevel: 0 };
+      }
+
+      const exists = target.players.some(p => p.handle.toLowerCase() === handle.toLowerCase());
+      const updatedPlayers = exists ? target.players : [...target.players, newPlayer];
+
+      const updatedTeam = { ...target, players: updatedPlayers };
+      const newTeams = prevTeams.map(t => t.name.toLowerCase() === teamNameInput.toLowerCase() ? updatedTeam : t);
+      if (!prevTeams.some(t => t.name.toLowerCase() === teamNameInput.toLowerCase())) {
+        newTeams.push(updatedTeam);
+      }
+
+      syncHub.saveStoredRooms(newTeams);
+      return newTeams;
     });
 
-    // Broadcast Join globally to all connected devices over Supabase
-    syncHub.broadcast('PLAYER_JOIN', {
+    // Broadcast JOIN globally to all connected devices over Supabase
+    syncHub.broadcast('TEAM_JOIN', {
+      teamName: teamNameInput,
       player: newPlayer,
-      message: `🎉 Player ${handle} joined the room CTF!`
+      message: `🎉 ${handle} joined team ${teamNameInput}!`
     });
   };
 
   const handleSwitchPlayer = () => {
-    if (player) {
-      syncHub.broadcast('PLAYER_LEAVE', {
+    if (player && activeTeamName) {
+      syncHub.broadcast('TEAM_LEAVE', {
+        teamName: activeTeamName,
         player,
-        message: `👋 Player ${player.handle} left the game.`
+        message: `👋 ${player.handle} left ${activeTeamName}.`
       });
     }
     setPlayer(null);
   };
 
-  // Submit Password Handler
+  // Submit Password Handler (Shared Team Progress)
   const submitPassword = (submittedPass) => {
     if (!currentLevel) return { success: false };
 
@@ -192,25 +224,25 @@ export default function App() {
         setCurrentLevelId(nextLvl);
       }
 
-      // Update Player Progress in Storage & Broadcast Globally
-      if (player) {
-        const updatedPlayer = { ...player, level: nextUnlocked };
-        setPlayer(updatedPlayer);
-
-        setConnectedPlayers(prev => {
-          const newList = prev.map(p => (p.id === player.id || p.handle.toLowerCase() === player.handle.toLowerCase()) ? updatedPlayer : p);
-          const filtered = newList.filter(p => p.id && !p.id.startsWith('bot-'));
-          const state = syncHub.getStoredState();
-          state.players = filtered;
-          syncHub.saveStoredState(state);
-          return filtered;
+      // Update Team Level in state & broadcast to teammate
+      setTeams(prevTeams => {
+        const newTeams = prevTeams.map(t => {
+          if (t.name.toLowerCase() === activeTeamName.toLowerCase()) {
+            return { ...t, unlockedLevel: Math.max(t.unlockedLevel || 0, nextUnlocked) };
+          }
+          return t;
         });
+        syncHub.saveStoredRooms(newTeams);
+        return newTeams;
+      });
 
-        syncHub.broadcast('LEVEL_UP', {
-          player: updatedPlayer,
-          message: `🔥 ${player.handle} solved Level ${currentLevelId}!`
-        });
-      }
+      syncHub.broadcast('TEAM_LEVEL_UP', {
+        teamName: activeTeamName,
+        player,
+        unlockedLevel: nextUnlocked,
+        password: currentLevel.password,
+        message: `🔥 ${player?.handle || 'Teammate'} in team ${activeTeamName} solved Level ${currentLevelId}! Password unlocked in Vault!`
+      });
 
       // Check Win Condition (Level 10)
       if (nextLvl >= 10 || nextUnlocked >= 10) {
@@ -232,32 +264,26 @@ export default function App() {
     syncHub.broadcast('TIMER_STATE', { running });
   };
 
-  const resetPlayerProgress = (playerId) => {
-    setConnectedPlayers(prev => {
-      const newList = prev.map(p => p.id === playerId ? { ...p, level: 0 } : p);
-      const state = syncHub.getStoredState();
-      state.players = newList;
-      syncHub.saveStoredState(state);
-      return newList;
+  const resetTeamProgress = (teamName) => {
+    setTeams(prevTeams => {
+      const newTeams = prevTeams.map(t => t.name.toLowerCase() === teamName.toLowerCase() ? { ...t, unlockedLevel: 0 } : t);
+      syncHub.saveStoredRooms(newTeams);
+      return newTeams;
     });
 
-    if (player && player.id === playerId) {
-      const updated = { ...player, level: 0 };
-      setPlayer(updated);
+    if (activeTeamName.toLowerCase() === teamName.toLowerCase()) {
       setUnlockedLevel(0);
       setCurrentLevelId(0);
     }
   };
 
-  const kickPlayer = (playerId) => {
-    setConnectedPlayers(prev => {
-      const newList = prev.filter(p => p.id !== playerId);
-      const state = syncHub.getStoredState();
-      state.players = newList;
-      syncHub.saveStoredState(state);
-      return newList;
+  const clearTeamPlayers = (teamName) => {
+    setTeams(prevTeams => {
+      const newTeams = prevTeams.map(t => t.name.toLowerCase() === teamName.toLowerCase() ? { ...t, players: [] } : t);
+      syncHub.saveStoredRooms(newTeams);
+      return newTeams;
     });
-    if (player && player.id === playerId) {
+    if (activeTeamName.toLowerCase() === teamName.toLowerCase()) {
       handleSwitchPlayer();
     }
   };
@@ -271,7 +297,7 @@ export default function App() {
       {/* Navbar */}
       <Navbar
         player={player}
-        roomCode={roomCode}
+        roomCode={activeTeamName ? `TEAM: ${activeTeamName}` : 'SELECT TEAM'}
         timerSeconds={timerSeconds}
         soundEnabled={soundEnabled}
         setSoundEnabled={setSoundEnabled}
@@ -321,8 +347,8 @@ export default function App() {
         </main>
       </div>
 
-      {/* Player Registration Modal */}
-      {!player && <JoinModal onJoin={handleJoin} />}
+      {/* Player Login / Team Name Input Modal */}
+      {!player && <JoinModal teams={teams} onJoin={handleJoin} />}
 
       {/* Victory Modal */}
       {showVictory && (
@@ -342,12 +368,12 @@ export default function App() {
       <AdminDashboard
         isOpen={isAdminOpen}
         onClose={() => setIsAdminOpen(false)}
-        players={connectedPlayers}
+        teams={teams}
         broadcastAnnouncement={broadcastAnnouncement}
         timer={{ running: timerRunning }}
         setTimerState={setTimerState}
-        resetPlayerProgress={resetPlayerProgress}
-        kickPlayer={kickPlayer}
+        resetTeamProgress={resetTeamProgress}
+        clearTeamPlayers={clearTeamPlayers}
       />
 
       {/* Linux Cheat Sheet Modal */}
@@ -363,6 +389,7 @@ export default function App() {
         onClose={() => setIsVaultOpen(false)}
         levels={LEVELS}
         unlockedLevel={unlockedLevel}
+        teamName={activeTeamName}
       />
     </div>
   );

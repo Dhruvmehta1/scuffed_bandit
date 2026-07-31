@@ -1,9 +1,9 @@
-// Real-Time Multiplayer Sync Hub (Supports Local Broadcast + Supabase Realtime Cloud Sync)
+// Real-Time Multi-Room Team Sync Engine (Local Broadcast + Supabase Realtime)
 
 import { supabase, isSupabaseConfigured } from './supabaseClient';
 
-const CHANNEL_NAME = 'bandit_ctf_multiplayer_channel';
-const STORAGE_KEY = 'bandit_ctf_room_state_v1';
+const CHANNEL_NAME = 'bandit_ctf_multiroom_channel';
+const STORAGE_KEY = 'bandit_ctf_rooms_state_v2';
 
 export class MultiplayerSyncHub {
   constructor(onEventCallback) {
@@ -11,7 +11,6 @@ export class MultiplayerSyncHub {
     this.channel = null;
     this.supabaseChannel = null;
     this.initChannel();
-    this.cleanUpBots();
   }
 
   initChannel() {
@@ -25,7 +24,7 @@ export class MultiplayerSyncHub {
       };
     }
 
-    // 2. Fallback sync via window storage event
+    // 2. Storage event listener fallback
     window.addEventListener('storage', (e) => {
       if (e.key === STORAGE_KEY && e.newValue) {
         try {
@@ -35,10 +34,10 @@ export class MultiplayerSyncHub {
       }
     });
 
-    // 3. Supabase Realtime WebSockets (Global Internet Sync)
+    // 3. Supabase Realtime WebSockets for global room sync
     if (isSupabaseConfigured && supabase) {
-      this.supabaseChannel = supabase.channel('ctf_global_room')
-        .on('broadcast', { event: 'game_event' }, (payload) => {
+      this.supabaseChannel = supabase.channel('ctf_team_rooms')
+        .on('broadcast', { event: 'room_event' }, (payload) => {
           if (this.onEventCallback && payload.data) {
             this.onEventCallback(payload.data);
           }
@@ -54,58 +53,35 @@ export class MultiplayerSyncHub {
       timestamp: Date.now()
     };
 
-    // Broadcast to local tabs
     if (this.channel) {
       this.channel.postMessage(eventData);
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(eventData));
 
-    // Broadcast to global internet via Supabase Realtime
     if (this.supabaseChannel) {
       this.supabaseChannel.send({
         type: 'broadcast',
-        event: 'game_event',
+        event: 'room_event',
         data: eventData
       });
     }
 
-    // Self callback
     if (this.onEventCallback) {
       this.onEventCallback(eventData);
     }
   }
 
-  // Remove any legacy bot entries from storage
-  cleanUpBots() {
-    let state = this.getStoredState();
-    if (state.players && state.players.length > 0) {
-      const realPlayers = state.players.filter(p => p.id && !p.id.startsWith('bot-'));
-      if (realPlayers.length !== state.players.length) {
-        state.players = realPlayers;
-        this.saveStoredState(state);
-      }
-    }
-  }
-
-  getStoredState() {
+  getStoredRooms() {
     try {
-      const raw = localStorage.getItem('bandit_master_game_data');
-      if (!raw) return { players: [], announcements: [], timer: { running: true, seconds: 0 } };
-      
-      const state = JSON.parse(raw);
-      if (state.players) {
-        state.players = state.players.filter(p => p.id && !p.id.startsWith('bot-'));
-      }
-      return state;
+      const raw = localStorage.getItem('bandit_master_rooms_data');
+      if (!raw) return null;
+      return JSON.parse(raw);
     } catch (e) {
-      return { players: [], announcements: [], timer: { running: true, seconds: 0 } };
+      return null;
     }
   }
 
-  saveStoredState(state) {
-    if (state.players) {
-      state.players = state.players.filter(p => p.id && !p.id.startsWith('bot-'));
-    }
-    localStorage.setItem('bandit_master_game_data', JSON.stringify(state));
+  saveStoredRooms(roomsData) {
+    localStorage.setItem('bandit_master_rooms_data', JSON.stringify(roomsData));
   }
 }
