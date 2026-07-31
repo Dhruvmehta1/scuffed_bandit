@@ -16,7 +16,16 @@ import { PasswordVaultModal } from './components/PasswordVaultModal';
 import { soundFx } from './utils/audio';
 
 export default function App() {
-  const [player, setPlayer] = useState(null);
+  // Restore active player session from localStorage on page refresh
+  const [player, setPlayer] = useState(() => {
+    try {
+      const saved = localStorage.getItem('bandit_active_player');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
+
   const [roomCode] = useState('BANDIT-' + Math.floor(1000 + Math.random() * 9000));
   const [currentLevelId, setCurrentLevelId] = useState(0);
   const [unlockedLevel, setUnlockedLevel] = useState(0);
@@ -41,6 +50,15 @@ export default function App() {
 
   // Terminal Input State
   const [cmdInputValue, setCmdInputValue] = useState('');
+
+  // Restore player level state on session load
+  useEffect(() => {
+    if (player && player.level !== undefined) {
+      setUnlockedLevel(player.level);
+      setCurrentLevelId(Math.min(player.level, LEVELS.length - 1));
+      localStorage.setItem('bandit_active_player', JSON.stringify(player));
+    }
+  }, [player]);
 
   // Initialize VFS for current level
   const currentLevel = LEVELS[currentLevelId] || LEVELS[0];
@@ -69,9 +87,9 @@ export default function App() {
         if (event.payload && event.payload.player && (!event.payload.player.id || !event.payload.player.id.startsWith('bot-'))) {
           const incoming = event.payload.player;
           setConnectedPlayers(prev => {
-            const exists = prev.some(p => p.id === incoming.id || p.handle === incoming.handle);
+            const exists = prev.some(p => p.id === incoming.id || p.handle.toLowerCase() === incoming.handle.toLowerCase());
             const newList = exists
-              ? prev.map(p => (p.id === incoming.id || p.handle === incoming.handle) ? incoming : p)
+              ? prev.map(p => (p.id === incoming.id || p.handle.toLowerCase() === incoming.handle.toLowerCase()) ? incoming : p)
               : [...prev, incoming];
 
             const filtered = newList.filter(p => p.id && !p.id.startsWith('bot-'));
@@ -86,11 +104,17 @@ export default function App() {
     });
   }, []);
 
-  // Load initial players list on mount & request sync
+  // Load initial players list on mount & announce active player
   useEffect(() => {
     const stored = syncHub.getStoredState();
     if (stored.players) {
       setConnectedPlayers(stored.players.filter(p => p.id && !p.id.startsWith('bot-')));
+    }
+    if (player) {
+      syncHub.broadcast('PLAYER_SYNC', {
+        player,
+        message: `⚡ Player ${player.handle} reconnected!`
+      });
     }
   }, [syncHub]);
 
@@ -105,9 +129,12 @@ export default function App() {
     return () => clearInterval(interval);
   }, [timerRunning]);
 
-  // Handle Player Registration
+  // Handle Player Registration / Switch Handle
   const handleJoin = (handle, avatar) => {
-    const newPlayer = {
+    // Check if player with same handle already exists in state
+    const existing = connectedPlayers.find(p => p.handle.toLowerCase() === handle.toLowerCase());
+
+    const activeUser = existing ? { ...existing, avatar } : {
       id: 'player-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
       handle,
       avatar,
@@ -115,11 +142,16 @@ export default function App() {
       attempts: 0,
       startTime: Date.now()
     };
-    setPlayer(newPlayer);
 
-    // Merge into local list
+    setPlayer(activeUser);
+    setUnlockedLevel(activeUser.level || 0);
+    setCurrentLevelId(Math.min(activeUser.level || 0, LEVELS.length - 1));
+    localStorage.setItem('bandit_active_player', JSON.stringify(activeUser));
+
+    // Merge into connected list without duplicate handles
     setConnectedPlayers(prev => {
-      const newList = [...prev.filter(p => p.handle !== handle && (!p.id || !p.id.startsWith('bot-'))), newPlayer];
+      const filtered = prev.filter(p => p.handle.toLowerCase() !== handle.toLowerCase());
+      const newList = [...filtered, activeUser];
       const state = syncHub.getStoredState();
       state.players = newList;
       syncHub.saveStoredState(state);
@@ -128,9 +160,14 @@ export default function App() {
 
     // Broadcast Join globally to all connected devices over Supabase
     syncHub.broadcast('PLAYER_JOIN', {
-      player: newPlayer,
-      message: `🎉 Player ${handle} joined the room CTF!`
+      player: activeUser,
+      message: `🎉 Player ${handle} online!`
     });
+  };
+
+  const handleSwitchPlayer = () => {
+    localStorage.removeItem('bandit_active_player');
+    setPlayer(null);
   };
 
   // Submit Password Handler
@@ -150,9 +187,10 @@ export default function App() {
       if (player) {
         const updatedPlayer = { ...player, level: nextUnlocked };
         setPlayer(updatedPlayer);
+        localStorage.setItem('bandit_active_player', JSON.stringify(updatedPlayer));
 
         setConnectedPlayers(prev => {
-          const newList = prev.map(p => (p.id === player.id || p.handle === player.handle) ? updatedPlayer : p);
+          const newList = prev.map(p => (p.id === player.id || p.handle.toLowerCase() === player.handle.toLowerCase()) ? updatedPlayer : p);
           const filtered = newList.filter(p => p.id && !p.id.startsWith('bot-'));
           const state = syncHub.getStoredState();
           state.players = filtered;
@@ -196,8 +234,11 @@ export default function App() {
     });
 
     if (player && player.id === playerId) {
+      const updated = { ...player, level: 0 };
+      setPlayer(updated);
       setUnlockedLevel(0);
       setCurrentLevelId(0);
+      localStorage.setItem('bandit_active_player', JSON.stringify(updated));
     }
   };
 
@@ -209,6 +250,9 @@ export default function App() {
       syncHub.saveStoredState(state);
       return newList;
     });
+    if (player && player.id === playerId) {
+      handleSwitchPlayer();
+    }
   };
 
   const copyToTerminal = (cmd) => {
@@ -231,6 +275,7 @@ export default function App() {
         openCheatSheet={() => setIsCheatSheetOpen(true)}
         openVault={() => setIsVaultOpen(true)}
         openAdminModal={() => setIsAdminOpen(true)}
+        onSwitchPlayer={handleSwitchPlayer}
       />
 
       {/* Admin Broadcast Banner Popup */}

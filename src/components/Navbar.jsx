@@ -1,5 +1,5 @@
 import React from 'react';
-import { Shield, Volume2, VolumeX, BookOpen, Key, Monitor, Users, Lock } from 'lucide-react';
+import { Shield, Volume2, VolumeX, BookOpen, Key, Monitor, Users, Lock, LogOut } from 'lucide-react';
 import { soundFx } from '../utils/audio';
 
 export function Navbar({
@@ -14,7 +14,8 @@ export function Navbar({
   setCrtEnabled,
   openCheatSheet,
   openVault,
-  openAdminModal
+  openAdminModal,
+  onSwitchPlayer
 }) {
   const formatTime = (secs) => {
     const m = Math.floor(secs / 60).toString().padStart(2, '0');
@@ -51,11 +52,12 @@ export function Navbar({
       </div>
 
       <div className="nav-actions">
-        {/* Player Badge */}
+        {/* Player Badge with Switch Option */}
         {player && (
-          <div className="player-badge">
+          <div className="player-badge" title="Click to switch profile handle" onClick={onSwitchPlayer} style={{ cursor: 'pointer' }}>
             <span className="player-avatar">{player.avatar || '⚡'}</span>
             <span className="player-handle">{player.handle}</span>
+            <LogOut className="btn-icon-xs text-muted" />
           </div>
         )}
 
