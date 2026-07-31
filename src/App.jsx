@@ -86,10 +86,49 @@ export default function App() {
         soundFx.playSuccessChime();
       } else if (event.type === 'TIMER_STATE') {
         setTimerRunning(event.payload.running);
+      } else if (event.type === 'TEAM_SYNC_REQUEST') {
+        // Broadcast current teams state to newly connected client
+        const stored = syncHub.getStoredRooms();
+        if (stored && stored.length > 0) {
+          syncHub.broadcast('TEAM_ALL_SYNC', { teams: stored });
+        }
+      } else if (event.type === 'TEAM_ALL_SYNC' && event.payload && Array.isArray(event.payload.teams)) {
+        // Merge full teams list from master sync
+        const remoteTeams = event.payload.teams;
+        setTeams(prevTeams => {
+          const safe = Array.isArray(prevTeams) ? prevTeams : [];
+          const mergedMap = new Map();
+
+          safe.forEach(t => t && t.name && mergedMap.set(t.name.toLowerCase(), t));
+          remoteTeams.forEach(rt => {
+            if (!rt || !rt.name) return;
+            const existing = mergedMap.get(rt.name.toLowerCase());
+            if (!existing) {
+              mergedMap.set(rt.name.toLowerCase(), rt);
+            } else {
+              // Merge players list
+              const existingPlayers = existing.players || [];
+              const remotePlayers = rt.players || [];
+              const playerMap = new Map();
+              existingPlayers.forEach(p => p && p.handle && playerMap.set(p.handle.toLowerCase(), p));
+              remotePlayers.forEach(p => p && p.handle && playerMap.set(p.handle.toLowerCase(), p));
+
+              mergedMap.set(rt.name.toLowerCase(), {
+                ...existing,
+                players: Array.from(playerMap.values()),
+                unlockedLevel: Math.max(existing.unlockedLevel || 0, rt.unlockedLevel || 0)
+              });
+            }
+          });
+
+          const result = Array.from(mergedMap.values());
+          syncHub.saveStoredRooms(result);
+          return result;
+        });
       } else if (event.type === 'TEAM_JOIN' || event.type === 'TEAM_LEVEL_UP' || event.type === 'TEAM_LEAVE' || event.type === 'TEAM_STATE_SYNC') {
         setActivityFeed(prev => [...prev, event]);
 
-        // Full Team Object Sync across devices
+        // Single Team Object Sync
         if (event.type === 'TEAM_STATE_SYNC' && event.payload && event.payload.team) {
           const syncedTeam = event.payload.team;
           setTeams(prevTeams => {
@@ -139,11 +178,11 @@ export default function App() {
 
             syncHub.saveStoredRooms(newTeams);
 
-            // Re-broadcast full team state so the newly joined player gets the complete team list!
-            if (event.type === 'TEAM_JOIN' && updatedTeam.players.length > 1) {
+            // Re-broadcast full team state so other clients get complete team info
+            if (event.type === 'TEAM_JOIN') {
               setTimeout(() => {
                 syncHub.broadcast('TEAM_STATE_SYNC', { team: updatedTeam });
-              }, 300);
+              }, 200);
             }
 
             return newTeams;
