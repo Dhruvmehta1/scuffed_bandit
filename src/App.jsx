@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { LEVELS } from './data/levels';
 import { VirtualFileSystem } from './vfs/virtualFileSystem';
 import { ShellEngine } from './vfs/shellEngine';
-import { MultiplayerSyncHub } from './multiplayer/broadcastChannel';
 
 import { Navbar } from './components/Navbar';
 import { Sidebar } from './components/Sidebar';
@@ -16,7 +15,6 @@ import { PasswordVaultModal } from './components/PasswordVaultModal';
 import { soundFx } from './utils/audio';
 
 export default function App() {
-  // Player session starts null on refresh so user must enter Team Name & Username
   const [player, setPlayer] = useState(null);
   const [activeTeamName, setActiveTeamName] = useState('');
   const [teams, setTeams] = useState([]);
@@ -74,54 +72,19 @@ export default function App() {
     return new ShellEngine(vfs);
   }, [vfs]);
 
-  // Real-time Multi-Team Sync Hub
-  const syncHub = useMemo(() => {
-    return new MultiplayerSyncHub(
-      (event) => {
-        if (!event) return;
-
-        if (event.type === 'ADMIN_BROADCAST') {
-          setAdminBanner(event.payload.message);
-          soundFx.playSuccessChime();
-        } else if (event.type === 'TIMER_STATE') {
-          setTimerRunning(event.payload.running);
-        } else if (event.type === 'PLAYER_JOIN_TEAM' || event.type === 'TEAM_LEVEL_SOLVED' || event.type === 'PLAYER_LEAVE_TEAM') {
-          setActivityFeed(prev => [...prev, event]);
-        }
-      },
-      (allTeamsFromDB) => {
-        // Automatic live update whenever any player or team changes in Supabase DB
-        if (Array.isArray(allTeamsFromDB)) {
-          setTeams(allTeamsFromDB);
-          syncHub.saveStoredRooms(allTeamsFromDB);
-        }
-      }
-    );
-  }, []);
-
-  // Fetch all teams from Supabase DB on load and poll every 2 seconds as fail-safe
+  // Timer Tick Interval
   useEffect(() => {
-    const loadTeams = async () => {
-      const dbTeams = await syncHub.fetchAllTeamsFromDatabase();
-      if (dbTeams && Array.isArray(dbTeams)) {
-        setTeams(dbTeams);
-      }
-    };
-    loadTeams();
-
-    const interval = setInterval(loadTeams, 2000);
-    return () => clearInterval(interval);
-  }, [syncHub]);
-
-  // Auto-sync active player to Supabase DB whenever logged in
-  useEffect(() => {
-    if (player && activeTeamName) {
-      syncHub.registerPlayerToTeam(activeTeamName, player.handle, player.avatar);
+    let interval = null;
+    if (timerRunning) {
+      interval = setInterval(() => {
+        setTimerSeconds(prev => prev + 1);
+      }, 1000);
     }
-  }, [player, activeTeamName, syncHub]);
+    return () => clearInterval(interval);
+  }, [timerRunning]);
 
   // Handle Player Registration / Team Join
-  const handleJoin = async (teamNameInput, handle, avatar, isRejoin) => {
+  const handleJoin = (teamNameInput, handle, avatar) => {
     setActiveTeamName(teamNameInput);
 
     const newPlayer = {
@@ -133,30 +96,38 @@ export default function App() {
 
     setPlayer(newPlayer);
 
-    // Save player and team to Supabase Relational Database
-    await syncHub.registerPlayerToTeam(teamNameInput, handle, avatar);
+    setTeams(prevTeams => {
+      const safe = Array.isArray(prevTeams) ? prevTeams : [];
+      let target = safe.find(t => t && t.name && t.name.toLowerCase() === teamNameInput.toLowerCase());
+      if (!target) {
+        target = { name: teamNameInput, maxPlayers: 2, players: [], unlockedLevel: 0 };
+      }
 
-    // Broadcast JOIN event
-    syncHub.broadcast('PLAYER_JOIN_TEAM', {
-      teamName: teamNameInput,
-      player: newPlayer,
-      message: `🎉 ${handle} joined team ${teamNameInput}!`
+      const existingPlayers = Array.isArray(target.players) ? target.players : [];
+      const exists = existingPlayers.some(p => p && p.handle && p.handle.toLowerCase() === handle.toLowerCase());
+      const updatedPlayers = exists ? existingPlayers : [...existingPlayers, newPlayer];
+
+      const updatedTeam = { ...target, players: updatedPlayers };
+      const newTeams = safe.map(t => (t && t.name && t.name.toLowerCase() === teamNameInput.toLowerCase()) ? updatedTeam : t);
+      if (!safe.some(t => t && t.name && t.name.toLowerCase() === teamNameInput.toLowerCase())) {
+        newTeams.push(updatedTeam);
+      }
+
+      return newTeams;
     });
+
+    setActivityFeed(prev => [...prev, {
+      type: 'PLAYER_JOIN_TEAM',
+      payload: { teamName: teamNameInput, player: newPlayer, message: `🎉 ${handle} joined team ${teamNameInput}!` }
+    }]);
   };
 
   const handleSwitchPlayer = () => {
-    if (player && activeTeamName) {
-      syncHub.broadcast('PLAYER_LEAVE_TEAM', {
-        teamName: activeTeamName,
-        player,
-        message: `👋 ${player.handle} left ${activeTeamName}.`
-      });
-    }
     setPlayer(null);
   };
 
-  // Submit Password Handler (Shared Team Progress)
-  const submitPassword = async (submittedPass) => {
+  // Submit Password Handler
+  const submitPassword = (submittedPass) => {
     if (!currentLevel) return { success: false };
 
     if (submittedPass === currentLevel.password) {
@@ -168,21 +139,21 @@ export default function App() {
         setCurrentLevelId(nextLvl);
       }
 
-      // Update Team Level in Supabase Relational Database
-      if (activeTeamName) {
-        await syncHub.updateTeamLevel(activeTeamName, nextUnlocked);
-      }
-
-      // Broadcast level solution to teammate in room & admin dashboard
-      if (player && activeTeamName) {
-        syncHub.broadcast('TEAM_LEVEL_SOLVED', {
-          teamName: activeTeamName,
-          player,
-          unlockedLevel: nextUnlocked,
-          password: currentLevel.password,
-          message: `🔥 ${player.handle} in team ${activeTeamName} solved Level ${currentLevelId}! Password unlocked in Vault!`
+      // Update Team Level in local state
+      setTeams(prevTeams => {
+        const safe = Array.isArray(prevTeams) ? prevTeams : [];
+        return safe.map(t => {
+          if (t && t.name && t.name.toLowerCase() === activeTeamName.toLowerCase()) {
+            return { ...t, unlockedLevel: Math.max(t.unlockedLevel || 0, nextUnlocked) };
+          }
+          return t;
         });
-      }
+      });
+
+      setActivityFeed(prev => [...prev, {
+        type: 'TEAM_LEVEL_SOLVED',
+        payload: { teamName: activeTeamName, player, unlockedLevel: nextUnlocked, message: `🔥 ${player?.handle || 'Player'} solved Level ${currentLevelId}! Password unlocked in Vault!` }
+      }]);
 
       // Check Win Condition (Level 10)
       if (nextLvl >= 10 || nextUnlocked >= 10) {
@@ -196,16 +167,18 @@ export default function App() {
 
   // Admin Actions
   const broadcastAnnouncement = (message) => {
-    syncHub.broadcast('ADMIN_BROADCAST', { message });
+    setAdminBanner(message);
   };
 
   const setTimerState = (running) => {
     setTimerRunning(running);
-    syncHub.broadcast('TIMER_STATE', { running });
   };
 
-  const resetTeamProgress = async (teamName) => {
-    await syncHub.updateTeamLevel(teamName, 0);
+  const resetTeamProgress = (teamName) => {
+    setTeams(prevTeams => {
+      const safe = Array.isArray(prevTeams) ? prevTeams : [];
+      return safe.map(t => (t && t.name && t.name.toLowerCase() === teamName.toLowerCase()) ? { ...t, unlockedLevel: 0 } : t);
+    });
 
     if (activeTeamName.toLowerCase() === teamName.toLowerCase()) {
       setUnlockedLevel(0);
