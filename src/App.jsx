@@ -86,11 +86,46 @@ export default function App() {
         soundFx.playSuccessChime();
       } else if (event.type === 'TIMER_STATE') {
         setTimerRunning(event.payload.running);
-      } else if (event.type === 'TEAM_JOIN' || event.type === 'TEAM_HEARTBEAT' || event.type === 'TEAM_LEVEL_UP' || event.type === 'TEAM_LEAVE') {
-        if (event.type !== 'TEAM_HEARTBEAT') {
+      } else if (event.type === 'TEAM_JOIN' || event.type === 'TEAM_LEVEL_UP' || event.type === 'TEAM_SYNC_ALL') {
+        if (event.type !== 'TEAM_SYNC_ALL') {
           setActivityFeed(prev => [...prev, event]);
         }
 
+        // Full Master Teams Sync
+        if (event.type === 'TEAM_SYNC_ALL' && event.payload && Array.isArray(event.payload.teams)) {
+          setTeams(prevTeams => {
+            const safe = Array.isArray(prevTeams) ? prevTeams : [];
+            const teamMap = new Map();
+
+            safe.forEach(t => t && t.name && teamMap.set(t.name.toLowerCase(), t));
+            event.payload.teams.forEach(rt => {
+              if (!rt || !rt.name) return;
+              const existing = teamMap.get(rt.name.toLowerCase());
+              if (!existing) {
+                teamMap.set(rt.name.toLowerCase(), rt);
+              } else {
+                const existingPlayers = existing.players || [];
+                const remotePlayers = rt.players || [];
+                const pMap = new Map();
+                existingPlayers.forEach(p => p && p.handle && pMap.set(p.handle.toLowerCase(), p));
+                remotePlayers.forEach(p => p && p.handle && pMap.set(p.handle.toLowerCase(), p));
+
+                teamMap.set(rt.name.toLowerCase(), {
+                  ...existing,
+                  players: Array.from(pMap.values()),
+                  unlockedLevel: Math.max(existing.unlockedLevel || 0, rt.unlockedLevel || 0)
+                });
+              }
+            });
+
+            const merged = Array.from(teamMap.values());
+            syncHub.saveStoredRooms(merged);
+            return merged;
+          });
+          return;
+        }
+
+        // Individual player join / level up event
         if (event.payload && event.payload.teamName && event.payload.player) {
           const tName = event.payload.teamName.trim();
           const incomingPlayer = event.payload.player;
@@ -105,23 +140,18 @@ export default function App() {
 
             let updatedPlayers = Array.isArray(targetTeam.players) ? [...targetTeam.players] : [];
 
-            if (event.type === 'TEAM_LEAVE') {
-              updatedPlayers = updatedPlayers.filter(p => p && p.handle && p.handle.toLowerCase() !== incomingPlayer.handle.toLowerCase());
-            } else {
-              // Add or update player in team
-              const existsIdx = updatedPlayers.findIndex(p => p && p.handle && p.handle.toLowerCase() === incomingPlayer.handle.toLowerCase());
-              const pData = {
-                id: incomingPlayer.id || ('player-' + incomingPlayer.handle.toLowerCase()),
-                handle: incomingPlayer.handle,
-                avatar: incomingPlayer.avatar || '⚡',
-                lastActive: Date.now()
-              };
+            // Add or update player in team without removing on disconnect
+            const existsIdx = updatedPlayers.findIndex(p => p && p.handle && p.handle.toLowerCase() === incomingPlayer.handle.toLowerCase());
+            const pData = {
+              id: incomingPlayer.id || ('player-' + incomingPlayer.handle.toLowerCase()),
+              handle: incomingPlayer.handle,
+              avatar: incomingPlayer.avatar || '⚡'
+            };
 
-              if (existsIdx >= 0) {
-                updatedPlayers[existsIdx] = pData;
-              } else {
-                updatedPlayers.push(pData);
-              }
+            if (existsIdx >= 0) {
+              updatedPlayers[existsIdx] = pData;
+            } else {
+              updatedPlayers.push(pData);
             }
 
             const updatedTeam = {
@@ -143,82 +173,13 @@ export default function App() {
     });
   }, []);
 
-  // Periodic Heartbeat Broadcaster while active in a team (Every 3 seconds)
-  useEffect(() => {
-    if (!player || !activeTeamName) return;
-
-    // Send immediate heartbeat on join
-    syncHub.broadcast('TEAM_HEARTBEAT', {
-      teamName: activeTeamName,
-      player,
-      unlockedLevel
-    });
-
-    const interval = setInterval(() => {
-      syncHub.broadcast('TEAM_HEARTBEAT', {
-        teamName: activeTeamName,
-        player,
-        unlockedLevel
-      });
-    }, 3000);
-
-    return () => clearInterval(interval);
-  }, [player, activeTeamName, unlockedLevel, syncHub]);
-
-  // Clean up inactive players who haven't sent a heartbeat in 15 seconds
-  useEffect(() => {
-    const cleanInterval = setInterval(() => {
-      const now = Date.now();
-      setTeams(prevTeams => {
-        const safe = Array.isArray(prevTeams) ? prevTeams : [];
-        let changed = false;
-
-        const updatedTeams = safe.map(team => {
-          if (!team || !Array.isArray(team.players)) return team;
-          const activePlayers = team.players.filter(p => p.lastActive && (now - p.lastActive < 15000));
-          if (activePlayers.length !== team.players.length) {
-            changed = true;
-            return { ...team, players: activePlayers };
-          }
-          return team;
-        }).filter(team => team.players.length > 0 || team.unlockedLevel > 0);
-
-        if (changed) {
-          syncHub.saveStoredRooms(updatedTeams);
-          return updatedTeams;
-        }
-        return safe;
-      });
-    }, 5000);
-
-    return () => clearInterval(cleanInterval);
-  }, [syncHub]);
-
-  // Load stored teams on mount
+  // Load stored teams on mount and request sync from WebSocket
   useEffect(() => {
     const stored = syncHub.getStoredRooms();
     if (stored && Array.isArray(stored)) {
       setTeams(stored);
     }
   }, [syncHub]);
-
-  // Broadcast TEAM_LEAVE on refresh/unload
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      if (player && activeTeamName) {
-        syncHub.broadcast('TEAM_LEAVE', {
-          teamName: activeTeamName,
-          player,
-          message: `👋 ${player.handle} left ${activeTeamName}.`
-        });
-      }
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-    };
-  }, [player, activeTeamName, syncHub]);
 
   // Timer Tick Interval
   useEffect(() => {
@@ -231,7 +192,7 @@ export default function App() {
     return () => clearInterval(interval);
   }, [timerRunning]);
 
-  // Handle Player Registration / Team Join
+  // Handle Player Registration / Team Join or Rejoin
   const handleJoin = (teamNameInput, handle, avatar, isRejoin) => {
     setActiveTeamName(teamNameInput);
 
@@ -244,23 +205,50 @@ export default function App() {
 
     setPlayer(newPlayer);
 
+    // Update local teams state
+    let updatedTeamObj = null;
+    setTeams(prevTeams => {
+      const safe = Array.isArray(prevTeams) ? prevTeams : [];
+      let target = safe.find(t => t && t.name && t.name.toLowerCase() === teamNameInput.toLowerCase());
+      if (!target) {
+        target = { name: teamNameInput, maxPlayers: 2, players: [], unlockedLevel: 0 };
+      }
+
+      const existingPlayers = Array.isArray(target.players) ? target.players : [];
+      const existsIdx = existingPlayers.findIndex(p => p && p.handle && p.handle.toLowerCase() === handle.toLowerCase());
+      
+      let updatedPlayers = [...existingPlayers];
+      if (existsIdx >= 0) {
+        updatedPlayers[existsIdx] = newPlayer;
+      } else {
+        updatedPlayers.push(newPlayer);
+      }
+
+      updatedTeamObj = { ...target, players: updatedPlayers };
+      const newTeams = safe.map(t => (t && t.name && t.name.toLowerCase() === teamNameInput.toLowerCase()) ? updatedTeamObj : t);
+      if (!safe.some(t => t && t.name && t.name.toLowerCase() === teamNameInput.toLowerCase())) {
+        newTeams.push(updatedTeamObj);
+      }
+
+      syncHub.saveStoredRooms(newTeams);
+      return newTeams;
+    });
+
     // Broadcast JOIN event
     syncHub.broadcast('TEAM_JOIN', {
       teamName: teamNameInput,
       player: newPlayer,
-      unlockedLevel,
+      unlockedLevel: activeTeamData.unlockedLevel || 0,
       message: `🎉 ${handle} joined team ${teamNameInput}!`
     });
+
+    // Send full sync to all clients
+    if (updatedTeamObj) {
+      syncHub.broadcast('TEAM_SYNC_ALL', { teams: [...teams, updatedTeamObj] });
+    }
   };
 
   const handleSwitchPlayer = () => {
-    if (player && activeTeamName) {
-      syncHub.broadcast('TEAM_LEAVE', {
-        teamName: activeTeamName,
-        player,
-        message: `👋 ${player.handle} left ${activeTeamName}.`
-      });
-    }
     setPlayer(null);
   };
 
@@ -277,7 +265,19 @@ export default function App() {
         setCurrentLevelId(nextLvl);
       }
 
-      // Broadcast LEVEL UP to teammate & admin
+      // Update Team Level in state & broadcast to teammate
+      setTeams(prevTeams => {
+        const safe = Array.isArray(prevTeams) ? prevTeams : [];
+        const newTeams = safe.map(t => {
+          if (t && t.name && t.name.toLowerCase() === activeTeamName.toLowerCase()) {
+            return { ...t, unlockedLevel: Math.max(t.unlockedLevel || 0, nextUnlocked) };
+          }
+          return t;
+        });
+        syncHub.saveStoredRooms(newTeams);
+        return newTeams;
+      });
+
       if (player && activeTeamName) {
         syncHub.broadcast('TEAM_LEVEL_UP', {
           teamName: activeTeamName,
