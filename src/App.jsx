@@ -89,45 +89,27 @@ export default function App() {
           setActivityFeed(prev => [...prev, event]);
         }
       },
-      (singleUpdatedTeam) => {
-        // Live update when any team changes in Supabase Postgres Realtime Table
-        if (singleUpdatedTeam && singleUpdatedTeam.name) {
-          setTeams(prevTeams => {
-            const safe = Array.isArray(prevTeams) ? prevTeams : [];
-            const exists = safe.some(t => t && t.name && t.name.toLowerCase() === singleUpdatedTeam.name.toLowerCase());
-            const newTeams = exists
-              ? safe.map(t => (t && t.name && t.name.toLowerCase() === singleUpdatedTeam.name.toLowerCase()) ? singleUpdatedTeam : t)
-              : [...safe, singleUpdatedTeam];
-            
-            syncHub.saveStoredRooms(newTeams);
-
-            // If incoming update is for our active team, sync level
-            if (activeTeamName && singleUpdatedTeam.name.toLowerCase() === activeTeamName.toLowerCase()) {
-              if (singleUpdatedTeam.unlockedLevel !== undefined && singleUpdatedTeam.unlockedLevel > unlockedLevel) {
-                setUnlockedLevel(singleUpdatedTeam.unlockedLevel);
-                setCurrentLevelId(Math.min(singleUpdatedTeam.unlockedLevel, LEVELS.length - 1));
-              }
-            }
-
-            return newTeams;
-          });
+      (allTeamsFromDB) => {
+        // Automatic live update whenever any player or team changes in Supabase DB
+        if (Array.isArray(allTeamsFromDB)) {
+          setTeams(allTeamsFromDB);
+          syncHub.saveStoredRooms(allTeamsFromDB);
         }
       }
     );
-  }, [activeTeamName, unlockedLevel]);
+  }, []);
 
-  // Load all teams from Supabase Database on mount
+  // Fetch all teams from Supabase DB on load and poll every 3 seconds as fail-safe
   useEffect(() => {
     const loadTeams = async () => {
-      const fetched = await syncHub.fetchAllTeamsFromDatabase();
-      if (fetched && Array.isArray(fetched)) {
-        setTeams(fetched);
+      const dbTeams = await syncHub.fetchAllTeamsFromDatabase();
+      if (dbTeams && Array.isArray(dbTeams)) {
+        setTeams(dbTeams);
       }
     };
     loadTeams();
 
-    // Poll Supabase DB every 4 seconds as fail-safe fallback
-    const interval = setInterval(loadTeams, 4000);
+    const interval = setInterval(loadTeams, 3000);
     return () => clearInterval(interval);
   }, [syncHub]);
 
@@ -136,7 +118,7 @@ export default function App() {
     setActiveTeamName(teamNameInput);
 
     const newPlayer = {
-      id: 'player-' + handle.toLowerCase(),
+      id: `${teamNameInput.toLowerCase()}_${handle.toLowerCase()}`,
       handle,
       avatar,
       startTime: Date.now()
@@ -144,36 +126,13 @@ export default function App() {
 
     setPlayer(newPlayer);
 
-    // Fetch latest teams to prevent race conditions
-    const latestTeams = await syncHub.fetchAllTeamsFromDatabase();
-    const safe = Array.isArray(latestTeams) ? latestTeams : (Array.isArray(teams) ? teams : []);
-
-    let target = safe.find(t => t && t.name && t.name.toLowerCase() === teamNameInput.toLowerCase());
-    if (!target) {
-      target = { name: teamNameInput, maxPlayers: 2, players: [], unlockedLevel: 0 };
-    }
-
-    const existingPlayers = Array.isArray(target.players) ? target.players : [];
-    const exists = existingPlayers.some(p => p && p.handle && p.handle.toLowerCase() === handle.toLowerCase());
-    const updatedPlayers = exists ? existingPlayers : [...existingPlayers, newPlayer];
-
-    const updatedTeam = { ...target, players: updatedPlayers };
-
-    // Update local state and save to Supabase Database Table
-    const newTeams = safe.map(t => (t && t.name && t.name.toLowerCase() === teamNameInput.toLowerCase()) ? updatedTeam : t);
-    if (!safe.some(t => t && t.name && t.name.toLowerCase() === teamNameInput.toLowerCase())) {
-      newTeams.push(updatedTeam);
-    }
-
-    setTeams(newTeams);
-    syncHub.saveStoredRooms(newTeams);
-    await syncHub.saveTeamToDatabase(updatedTeam);
+    // Save player and team to Supabase Relational Database
+    await syncHub.registerPlayerToTeam(teamNameInput, handle, avatar);
 
     // Broadcast JOIN event
     syncHub.broadcast('PLAYER_JOIN_TEAM', {
       teamName: teamNameInput,
       player: newPlayer,
-      unlockedLevel: updatedTeam.unlockedLevel || 0,
       message: `🎉 ${handle} joined team ${teamNameInput}!`
     });
   };
@@ -202,23 +161,9 @@ export default function App() {
         setCurrentLevelId(nextLvl);
       }
 
-      // Update Team Level in state & save to Supabase Database
-      let updatedTeamObj = null;
-      setTeams(prevTeams => {
-        const safe = Array.isArray(prevTeams) ? prevTeams : [];
-        const newTeams = safe.map(t => {
-          if (t && t.name && t.name.toLowerCase() === activeTeamName.toLowerCase()) {
-            updatedTeamObj = { ...t, unlockedLevel: Math.max(t.unlockedLevel || 0, nextUnlocked) };
-            return updatedTeamObj;
-          }
-          return t;
-        });
-        syncHub.saveStoredRooms(newTeams);
-        return newTeams;
-      });
-
-      if (updatedTeamObj) {
-        await syncHub.saveTeamToDatabase(updatedTeamObj);
+      // Update Team Level in Supabase Relational Database
+      if (activeTeamName) {
+        await syncHub.updateTeamLevel(activeTeamName, nextUnlocked);
       }
 
       // Broadcast level solution to teammate in room & admin dashboard
@@ -253,23 +198,7 @@ export default function App() {
   };
 
   const resetTeamProgress = async (teamName) => {
-    let updatedObj = null;
-    setTeams(prevTeams => {
-      const safe = Array.isArray(prevTeams) ? prevTeams : [];
-      const newTeams = safe.map(t => {
-        if (t && t.name && t.name.toLowerCase() === teamName.toLowerCase()) {
-          updatedObj = { ...t, unlockedLevel: 0 };
-          return updatedObj;
-        }
-        return t;
-      });
-      syncHub.saveStoredRooms(newTeams);
-      return newTeams;
-    });
-
-    if (updatedObj) {
-      await syncHub.saveTeamToDatabase(updatedObj);
-    }
+    await syncHub.updateTeamLevel(teamName, 0);
 
     if (activeTeamName.toLowerCase() === teamName.toLowerCase()) {
       setUnlockedLevel(0);
@@ -277,25 +206,7 @@ export default function App() {
     }
   };
 
-  const clearTeamPlayers = async (teamName) => {
-    let updatedObj = null;
-    setTeams(prevTeams => {
-      const safe = Array.isArray(prevTeams) ? prevTeams : [];
-      const newTeams = safe.map(t => {
-        if (t && t.name && t.name.toLowerCase() === teamName.toLowerCase()) {
-          updatedObj = { ...t, players: [] };
-          return updatedObj;
-        }
-        return t;
-      });
-      syncHub.saveStoredRooms(newTeams);
-      return newTeams;
-    });
-
-    if (updatedObj) {
-      await syncHub.saveTeamToDatabase(updatedObj);
-    }
-
+  const clearTeamPlayers = (teamName) => {
     if (activeTeamName.toLowerCase() === teamName.toLowerCase()) {
       handleSwitchPlayer();
     }
