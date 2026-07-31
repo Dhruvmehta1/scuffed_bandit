@@ -23,7 +23,7 @@ export function JoinModal({ teams = [], onJoin }) {
     setError('');
 
     if (!formattedTeamName) {
-      setError('Please enter a Team Name!');
+      setError('Please type or enter any Team Name!');
       soundFx.playErrorBeep();
       return;
     }
@@ -39,7 +39,7 @@ export function JoinModal({ teams = [], onJoin }) {
 
     // Team capacity check (max 2 players per team) if not rejoining
     if (!isRejoin && existingTeam && Array.isArray(existingTeam.players) && existingTeam.players.length >= maxAllowed) {
-      setError(`Team "${formattedTeamName}" is already full (${currentCount}/${maxAllowed} teammates). Enter your exact username to rejoin or choose a different Team Name.`);
+      setError(`Team "${formattedTeamName}" already has 2 connected teammates (${currentCount}/${maxAllowed}). Enter your exact username to rejoin or choose a different Team Name.`);
       soundFx.playErrorBeep();
       return;
     }
@@ -54,26 +54,49 @@ export function JoinModal({ teams = [], onJoin }) {
         <div className="join-header">
           <Shield className="join-logo" />
           <h2>CYBERBANDIT 2-PLAYER TEAM CTF</h2>
-          <p className="join-subtitle">Enter Team Name & Username to Connect</p>
+          <p className="join-subtitle">Enter Any Team Name & Username to Connect</p>
         </div>
 
         <form onSubmit={handleSubmit} className="join-form">
-          {/* Team Name Input */}
+          {/* Free-form Team Name Input */}
           <div className="form-group">
-            <label className="form-label"><Users className="label-icon" /> Team Name (Max 2 Players/Team):</label>
+            <label className="form-label"><Users className="label-icon" /> Team Name (Type Any Name):</label>
             <input
               type="text"
               className="input-field join-input"
-              placeholder="e.g. CyberDragons or TeamAlpha"
+              placeholder="e.g. CyberDragons, TeamAlpha, BinaryBros, etc."
               value={teamName}
               onChange={(e) => {
                 setTeamName(e.target.value);
                 setError('');
               }}
-              maxLength={25}
+              maxLength={30}
               autoFocus
             />
-            <span className="input-hint">💡 Teammate tip: Your partner must enter the EXACT SAME Team Name to join your team!</span>
+
+            {/* Quick-select Active Teams list if any exist */}
+            {safeTeams.length > 0 && (
+              <div className="active-teams-pills" style={{ marginTop: '8px' }}>
+                <span className="input-hint">Active Teams: </span>
+                {safeTeams.map(t => (
+                  <button
+                    key={t.name}
+                    type="button"
+                    className="btn pill-btn"
+                    style={{ fontSize: '0.75rem', padding: '2px 8px', margin: '2px' }}
+                    onClick={() => {
+                      setTeamName(t.name);
+                      setError('');
+                      soundFx.playKeyClick();
+                    }}
+                  >
+                    {t.name} ({Array.isArray(t.players) ? t.players.length : 0}/2)
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <span className="input-hint">💡 Your partner must enter the EXACT SAME Team Name to join your team!</span>
           </div>
 
           {/* Player Username Input */}
@@ -125,7 +148,7 @@ export function JoinModal({ teams = [], onJoin }) {
         </form>
 
         <div className="join-footer-tip">
-          🤝 When your teammate solves a level, the password unlocks in your Vault instantly!
+          🤝 When either teammate solves a level, the password unlocks in your Vault instantly!
         </div>
       </div>
     </div>
