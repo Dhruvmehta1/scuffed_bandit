@@ -86,9 +86,25 @@ export default function App() {
         soundFx.playSuccessChime();
       } else if (event.type === 'TIMER_STATE') {
         setTimerRunning(event.payload.running);
-      } else if (event.type === 'TEAM_JOIN' || event.type === 'TEAM_LEVEL_UP' || event.type === 'TEAM_LEAVE') {
+      } else if (event.type === 'TEAM_JOIN' || event.type === 'TEAM_LEVEL_UP' || event.type === 'TEAM_LEAVE' || event.type === 'TEAM_STATE_SYNC') {
         setActivityFeed(prev => [...prev, event]);
 
+        // Full Team Object Sync across devices
+        if (event.type === 'TEAM_STATE_SYNC' && event.payload && event.payload.team) {
+          const syncedTeam = event.payload.team;
+          setTeams(prevTeams => {
+            const safe = Array.isArray(prevTeams) ? prevTeams : [];
+            const exists = safe.some(t => t && t.name && t.name.toLowerCase() === syncedTeam.name.toLowerCase());
+            const newTeams = exists
+              ? safe.map(t => (t && t.name && t.name.toLowerCase() === syncedTeam.name.toLowerCase()) ? syncedTeam : t)
+              : [...safe, syncedTeam];
+            syncHub.saveStoredRooms(newTeams);
+            return newTeams;
+          });
+          return;
+        }
+
+        // Individual player join / level up / leave event
         if (event.payload && event.payload.teamName) {
           const tName = event.payload.teamName;
           const incomingPlayer = event.payload.player;
@@ -122,6 +138,14 @@ export default function App() {
             }
 
             syncHub.saveStoredRooms(newTeams);
+
+            // Re-broadcast full team state so the newly joined player gets the complete team list!
+            if (event.type === 'TEAM_JOIN' && updatedTeam.players.length > 1) {
+              setTimeout(() => {
+                syncHub.broadcast('TEAM_STATE_SYNC', { team: updatedTeam });
+              }, 300);
+            }
+
             return newTeams;
           });
         }
@@ -180,6 +204,7 @@ export default function App() {
     setPlayer(newPlayer);
 
     // Update local teams state
+    let updatedTeamObj = null;
     setTeams(prevTeams => {
       const safe = Array.isArray(prevTeams) ? prevTeams : [];
       let target = safe.find(t => t && t.name && t.name.toLowerCase() === teamNameInput.toLowerCase());
@@ -191,22 +216,26 @@ export default function App() {
       const exists = existingPlayers.some(p => p && p.handle && p.handle.toLowerCase() === handle.toLowerCase());
       const updatedPlayers = exists ? existingPlayers : [...existingPlayers, newPlayer];
 
-      const updatedTeam = { ...target, players: updatedPlayers };
-      const newTeams = safe.map(t => (t && t.name && t.name.toLowerCase() === teamNameInput.toLowerCase()) ? updatedTeam : t);
+      updatedTeamObj = { ...target, players: updatedPlayers };
+      const newTeams = safe.map(t => (t && t.name && t.name.toLowerCase() === teamNameInput.toLowerCase()) ? updatedTeamObj : t);
       if (!safe.some(t => t && t.name && t.name.toLowerCase() === teamNameInput.toLowerCase())) {
-        newTeams.push(updatedTeam);
+        newTeams.push(updatedTeamObj);
       }
 
       syncHub.saveStoredRooms(newTeams);
       return newTeams;
     });
 
-    // Broadcast JOIN globally to all connected devices over Supabase
+    // Broadcast JOIN and TEAM STATE globally to all connected devices over Supabase
     syncHub.broadcast('TEAM_JOIN', {
       teamName: teamNameInput,
       player: newPlayer,
       message: `🎉 ${handle} joined team ${teamNameInput}!`
     });
+
+    if (updatedTeamObj) {
+      syncHub.broadcast('TEAM_STATE_SYNC', { team: updatedTeamObj });
+    }
   };
 
   const handleSwitchPlayer = () => {
