@@ -16,15 +16,8 @@ import { PasswordVaultModal } from './components/PasswordVaultModal';
 import { soundFx } from './utils/audio';
 
 export default function App() {
-  // Restore active player session from localStorage on page refresh
-  const [player, setPlayer] = useState(() => {
-    try {
-      const saved = localStorage.getItem('bandit_active_player');
-      return saved ? JSON.parse(saved) : null;
-    } catch (e) {
-      return null;
-    }
-  });
+  // Player state starts null on refresh so user must join fresh
+  const [player, setPlayer] = useState(null);
 
   const [roomCode] = useState('BANDIT-' + Math.floor(1000 + Math.random() * 9000));
   const [currentLevelId, setCurrentLevelId] = useState(0);
@@ -50,15 +43,6 @@ export default function App() {
 
   // Terminal Input State
   const [cmdInputValue, setCmdInputValue] = useState('');
-
-  // Restore player level state on session load
-  useEffect(() => {
-    if (player && player.level !== undefined) {
-      setUnlockedLevel(player.level);
-      setCurrentLevelId(Math.min(player.level, LEVELS.length - 1));
-      localStorage.setItem('bandit_active_player', JSON.stringify(player));
-    }
-  }, [player]);
 
   // Initialize VFS for current level
   const currentLevel = LEVELS[currentLevelId] || LEVELS[0];
@@ -100,21 +84,45 @@ export default function App() {
             return filtered;
           });
         }
+      } else if (event.type === 'PLAYER_LEAVE') {
+        setActivityFeed(prev => [...prev, event]);
+
+        if (event.payload && event.payload.player) {
+          const leaving = event.payload.player;
+          setConnectedPlayers(prev => {
+            const newList = prev.filter(p => p.id !== leaving.id && p.handle.toLowerCase() !== leaving.handle.toLowerCase());
+            const state = syncHub.getStoredState();
+            state.players = newList;
+            syncHub.saveStoredState(state);
+            return newList;
+          });
+        }
       }
     });
   }, []);
 
-  // Load initial players list on mount & announce active player
+  // Broadcast PLAYER_LEAVE when browser tab is refreshed or closed
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (player) {
+        syncHub.broadcast('PLAYER_LEAVE', {
+          player,
+          message: `👋 Player ${player.handle} left the game.`
+        });
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [player, syncHub]);
+
+  // Load initial players list on mount
   useEffect(() => {
     const stored = syncHub.getStoredState();
     if (stored.players) {
       setConnectedPlayers(stored.players.filter(p => p.id && !p.id.startsWith('bot-')));
-    }
-    if (player) {
-      syncHub.broadcast('PLAYER_SYNC', {
-        player,
-        message: `⚡ Player ${player.handle} reconnected!`
-      });
     }
   }, [syncHub]);
 
@@ -129,12 +137,9 @@ export default function App() {
     return () => clearInterval(interval);
   }, [timerRunning]);
 
-  // Handle Player Registration / Switch Handle
+  // Handle Player Registration / Join
   const handleJoin = (handle, avatar) => {
-    // Check if player with same handle already exists in state
-    const existing = connectedPlayers.find(p => p.handle.toLowerCase() === handle.toLowerCase());
-
-    const activeUser = existing ? { ...existing, avatar } : {
+    const newPlayer = {
       id: 'player-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
       handle,
       avatar,
@@ -143,15 +148,14 @@ export default function App() {
       startTime: Date.now()
     };
 
-    setPlayer(activeUser);
-    setUnlockedLevel(activeUser.level || 0);
-    setCurrentLevelId(Math.min(activeUser.level || 0, LEVELS.length - 1));
-    localStorage.setItem('bandit_active_player', JSON.stringify(activeUser));
+    setPlayer(newPlayer);
+    setUnlockedLevel(0);
+    setCurrentLevelId(0);
 
-    // Merge into connected list without duplicate handles
+    // Add to connected players list
     setConnectedPlayers(prev => {
       const filtered = prev.filter(p => p.handle.toLowerCase() !== handle.toLowerCase());
-      const newList = [...filtered, activeUser];
+      const newList = [...filtered, newPlayer];
       const state = syncHub.getStoredState();
       state.players = newList;
       syncHub.saveStoredState(state);
@@ -160,13 +164,18 @@ export default function App() {
 
     // Broadcast Join globally to all connected devices over Supabase
     syncHub.broadcast('PLAYER_JOIN', {
-      player: activeUser,
-      message: `🎉 Player ${handle} online!`
+      player: newPlayer,
+      message: `🎉 Player ${handle} joined the room CTF!`
     });
   };
 
   const handleSwitchPlayer = () => {
-    localStorage.removeItem('bandit_active_player');
+    if (player) {
+      syncHub.broadcast('PLAYER_LEAVE', {
+        player,
+        message: `👋 Player ${player.handle} left the game.`
+      });
+    }
     setPlayer(null);
   };
 
@@ -187,7 +196,6 @@ export default function App() {
       if (player) {
         const updatedPlayer = { ...player, level: nextUnlocked };
         setPlayer(updatedPlayer);
-        localStorage.setItem('bandit_active_player', JSON.stringify(updatedPlayer));
 
         setConnectedPlayers(prev => {
           const newList = prev.map(p => (p.id === player.id || p.handle.toLowerCase() === player.handle.toLowerCase()) ? updatedPlayer : p);
@@ -238,7 +246,6 @@ export default function App() {
       setPlayer(updated);
       setUnlockedLevel(0);
       setCurrentLevelId(0);
-      localStorage.setItem('bandit_active_player', JSON.stringify(updated));
     }
   };
 
